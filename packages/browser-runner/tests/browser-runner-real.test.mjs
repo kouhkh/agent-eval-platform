@@ -35,6 +35,7 @@ test("real Playwright runner enforces approval, dialog intent, bounded inspectio
     await session.page.setContent(`<!doctype html>
       <title>runner contract</title>
       <button id="confirm" onclick="window.confirmed = confirm('Apply fixture change?'); document.querySelector('#state').textContent = String(window.confirmed)">Apply</button>
+      <button id="replace" onclick="this.outerHTML = '<span id=&quot;next-view&quot;>next</span>'">Replace view</button>
       <span id="state">unset</span>
       <input id="upload" type="file">
       <main>${"visible-contract-text ".repeat(700)}</main>`);
@@ -67,6 +68,17 @@ test("real Playwright runner enforces approval, dialog intent, bounded inspectio
     assert.equal(acceptedDialog.status, "succeeded");
     assert.equal(acceptedDialog.data.interaction.dialog.handledAs, "accept");
     assert.equal(await session.page.locator("#state").textContent(), "true");
+
+    const replacedView = await item.manager.act(created.sessionId, {
+      action: "click",
+      target: { selector: "#replace" },
+      approvedScope: "switch isolated fixture view only",
+      deadlineMs: 5_000,
+    });
+    assert.equal(replacedView.status, "succeeded");
+    assert.equal(await session.page.locator("#next-view").textContent(), "next");
+    assert.equal(replacedView.data.screenshots.at(-1)?.found, false);
+    assert.match(replacedView.data.screenshots.at(-1)?.targetError || "", /#replace|waiting|timeout/i);
 
     const relativeUpload = await item.manager.act(created.sessionId, {
       action: "upload",

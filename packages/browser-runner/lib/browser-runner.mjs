@@ -319,7 +319,12 @@ export class PlaywrightRunner {
     if (target) {
       try {
         const locator = locatorFor(page, target).first();
-        await budget.run(() => locator.scrollIntoViewIfNeeded({ timeout: safeTimeout(budget) }), { onCancel: () => this.cancelPage(page) });
+        // A successful click may intentionally unmount its target (navigation,
+        // modal close, view switch). Evidence annotation is best-effort and
+        // must not consume the operation's entire deadline while waiting for
+        // that old element to reappear.
+        const annotationTimeoutMs = Math.max(1, Math.min(750, budget.remainingMs()));
+        await budget.run(() => locator.scrollIntoViewIfNeeded({ timeout: annotationTimeoutMs }), { onCancel: () => this.cancelPage(page) });
         targetInfo = await budget.run(() => locator.evaluate((element, { attribute }) => {
           const rect = element.getBoundingClientRect();
           const root = document.querySelector(`[${attribute}="root"]`);
@@ -342,7 +347,7 @@ export class PlaywrightRunner {
             x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height),
             tag: element.tagName, type: element.getAttribute("type"), disabled: Boolean(element.disabled || element.getAttribute("aria-disabled") === "true"),
           };
-        }, { attribute: EVIDENCE_ATTRIBUTE }), { onCancel: () => this.cancelPage(page) });
+        }, { attribute: EVIDENCE_ATTRIBUTE }, { timeout: annotationTimeoutMs }), { onCancel: () => this.cancelPage(page) });
       } catch (error) {
         targetError = trimText(error instanceof Error ? error.message : String(error), 500);
       }
