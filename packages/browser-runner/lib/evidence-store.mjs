@@ -16,8 +16,12 @@ function safePart(value, fallback = "item") {
   return text || fallback;
 }
 
-function redactText(value) {
-  return String(value || "")
+function redactText(value, sensitiveValues = []) {
+  let output = String(value || "");
+  for (const sensitiveValue of [...new Set(sensitiveValues.map(String).filter(Boolean))].sort((a, b) => b.length - a.length)) {
+    output = output.split(sensitiveValue).join("<redacted:runtime-value>");
+  }
+  return output
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer <redacted>")
     .replace(/([?&](?:token|access_token|api_key|apikey|secret|password)=)[^&]*/gi, "$1<redacted>")
     .slice(0, 5000);
@@ -25,12 +29,12 @@ function redactText(value) {
 
 const SENSITIVE_KEY = /(password|passwd|pwd|token|secret|api[-_]?key|authorization|cookie|localstorage|session|credential|private[-_]?key|headers?|postdata)/i;
 
-function sanitizeValue(value, key = "", parent = null) {
+function sanitizeValue(value, key = "", parent = null, sensitiveValues = []) {
   if (SENSITIVE_KEY.test(key)) return "<redacted:sensitive>";
   if (key === "value" && parent && /password|email|tel/i.test(String(parent.inputType || parent.type || ""))) return "<redacted:input>";
-  if (typeof value === "string") return redactText(value);
-  if (Array.isArray(value)) return value.slice(0, 500).map((item) => sanitizeValue(item, "", value));
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).slice(0, 300).map(([childKey, childValue]) => [childKey, sanitizeValue(childValue, childKey, value)]));
+  if (typeof value === "string") return redactText(value, sensitiveValues);
+  if (Array.isArray(value)) return value.slice(0, 500).map((item) => sanitizeValue(item, "", value, sensitiveValues));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).slice(0, 300).map(([childKey, childValue]) => [childKey, sanitizeValue(childValue, childKey, value, sensitiveValues)]));
   return value;
 }
 
@@ -69,20 +73,20 @@ export class EvidenceStore {
     return `evidence://${safePart(meta.sessionId)}/${safePart(meta.operationId)}`;
   }
 
-  async writeJson(sessionId, operationId, name, value) {
+  async writeJson(sessionId, operationId, name, value, options = {}) {
     const directory = this.operationDirectory(sessionId, operationId);
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const filename = `${safePart(name, "artifact")}.json`;
-    const sanitized = sanitizeValue(value);
+    const sanitized = sanitizeValue(value, "", null, options.sensitiveValues || []);
     await writeFile(path.join(directory, filename), `${JSON.stringify(sanitized, null, 2)}\n`, { mode: 0o600 });
     return `evidence://${safePart(sessionId)}/${safePart(operationId)}/${filename}`;
   }
 
-  async writeText(sessionId, operationId, name, value) {
+  async writeText(sessionId, operationId, name, value, options = {}) {
     const directory = this.operationDirectory(sessionId, operationId);
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const filename = safePart(name, "artifact");
-    await writeFile(path.join(directory, filename), redactText(value), { mode: 0o600 });
+    await writeFile(path.join(directory, filename), redactText(value, options.sensitiveValues || []), { mode: 0o600 });
     return `evidence://${safePart(sessionId)}/${safePart(operationId)}/${filename}`;
   }
 
@@ -95,11 +99,12 @@ export class EvidenceStore {
     return { ref: `evidence://${safePart(sessionId)}/${safePart(operationId)}/${filename}`, sha256: digest, bytes: buffer.length };
   }
 
-  async saveOperationResult(sessionId, operationId, result) {
+  async saveOperationResult(sessionId, operationId, result, options = {}) {
     const refs = [];
-    if (result?.domSnapshot) refs.push(await this.writeJson(sessionId, operationId, "dom-snapshot", result.domSnapshot));
-    if (result?.network) refs.push(await this.writeJson(sessionId, operationId, "network", sanitizeNetwork(result.network)));
-    if (result?.screenshotBuffer) {
+    const hasRuntimeSensitiveValues = Array.isArray(options.sensitiveValues) && options.sensitiveValues.some((value) => String(value || ""));
+    if (result?.domSnapshot) refs.push(await this.writeJson(sessionId, operationId, "dom-snapshot", result.domSnapshot, options));
+    if (result?.network) refs.push(await this.writeJson(sessionId, operationId, "network", sanitizeNetwork(result.network), options));
+    if (result?.screenshotBuffer && !hasRuntimeSensitiveValues) {
       const saved = await this.writeBuffer(sessionId, operationId, "screenshot", result.screenshotBuffer, "png");
       refs.push(saved.ref);
     }
@@ -107,7 +112,7 @@ export class EvidenceStore {
     delete publicResult.screenshotBuffer;
     delete publicResult.domSnapshot;
     delete publicResult.network;
-    refs.push(await this.writeJson(sessionId, operationId, "result", publicResult));
+    refs.push(await this.writeJson(sessionId, operationId, "result", publicResult, options));
     return refs;
   }
 

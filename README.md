@@ -25,6 +25,7 @@ PinAsk / REST / CLI / MCP / CI
 - 被测应用的版本记在每次用例执行的 `sourceRevision`，不写入平台全局版本清单。
 - 平台依赖版本记在 [`compatibility.yaml`](compatibility.yaml)，用于复现 DSH、PinAsk 和 Playwright 的组合。
 - 凭据、会话 profile、任务历史和证据目录均不进入 Git。
+- 登录等前置条件用通用 `setup` fixture 表达，而不是被测系统 adapter。输入值可在运行时通过环境变量或可替换的 `secretRef` 解析器注入；明文不写入测试资产、REST 请求、运行结果或证据。
 
 ## 开发
 

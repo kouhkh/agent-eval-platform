@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { asBrowserRunnerError, BrowserRunnerError, createOperationBudget } from "./operation-budget.mjs";
 import { sanitizeUrl } from "./evidence-store.mjs";
+import { runtimeSensitiveValues } from "./runtime-values.mjs";
 
 function nowIso() {
   return new Date().toISOString();
@@ -136,8 +137,10 @@ export class SessionManager {
     };
     this.sessions.set(sessionId, session);
     try {
-      await this.runner.startTrace(context);
-      session.traceActive = true;
+      if (options.trace !== false) {
+        await this.runner.startTrace(context);
+        session.traceActive = true;
+      }
     } catch (error) {
       // Trace support is valuable but not required to operate a browser.
       session.traceError = asBrowserRunnerError(error, { phase: "trace", statusCode: 502 }).toJSON();
@@ -272,7 +275,7 @@ export class SessionManager {
       const evidenceBase = this.evidenceStore ? await this.evidenceStore.begin({ operationId, sessionId, tabId: session.tabId, kind, startedAt: nowIso(), request: input }) : null;
       if (evidenceBase) evidenceRefs.push(evidenceBase);
       const data = await budget.run(() => handler({ page: session.page, context: session.context, session, budget }), { onCancel: () => this.runner.cancelPage(session.page) });
-      if (data && this.evidenceStore) evidenceRefs = [...evidenceRefs, ...(await this.evidenceStore.saveOperationResult(sessionId, operationId, data))];
+      if (data && this.evidenceStore) evidenceRefs = [...evidenceRefs, ...(await this.evidenceStore.saveOperationResult(sessionId, operationId, data, { sensitiveValues: runtimeSensitiveValues(input) }))];
       return { operationId, sessionId, tabId: session.tabId, status: "succeeded", elapsedMs: Date.now() - started, phase: "completed", errorCode: null, evidenceRefs, data };
     } catch (error) {
       const normalized = asBrowserRunnerError(error, { operationId, sessionId, tabId: session.tabId, phase: kind });

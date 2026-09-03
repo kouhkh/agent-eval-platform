@@ -5,8 +5,8 @@
 ## 边界
 
 - 使用 Playwright 的 Browser/Context/Page，不自研浏览器内核。
-- 默认使用独立临时 context。保留登录态时可传 `profileDir`，但必须位于 `data/profiles` 内，且由用户手动登录。
-- 服务不接收或记录密码、cookie、localStorage、请求头和 POST 数据。
+- 默认使用独立临时 context。保留登录态时可传 `profileDir`，但必须位于 `data/profiles` 内。
+- 服务不通过 REST 接收密码、cookie、localStorage、授权请求头或 POST 数据。自动登录使用通用 setup fixture：资产只保存环境变量名或不透明 `secretRef`，值由 browser-runner 进程或注册的凭据解析器在运行时解析。
 - 同一 session/tab 只允许一个操作。并发请求返回 `TAB_BUSY`，不会在原 tab 上盲目重试。
 - 浏览器断线会把 session 标记为 `stale`，由调用方显式 reconnect，不产生幽灵 tab。
 - 默认不截图；`inspect` 传 `screenshot: true` 才保存 PNG。DOM 只保存交互元素摘要，不保存完整 HTML。
@@ -64,7 +64,77 @@ CLI 通过 `AGENT_EVAL_URL` 指定服务地址。MCP 服务使用 stdio JSON-RPC
 
 ## 测试资产
 
-`/api/test-cases` 提供第一版 CRUD。资产包含 `steps`、人工确认后的 `assertions`、`environment`、`sourceRevision` 和 `policy.gate/nightly`。`POST /api/test-cases/:id/runs` 按这些权威断言执行并记录历史。轨迹不直接等于测试，浏览器运行器也不负责 Agent 自主规划。
+`/api/test-cases` 提供第一版 CRUD。资产包含 `setup`、`steps`、人工确认后的 `assertions`、`environment`、`sourceRevision` 和 `policy.gate/nightly`。`POST /api/test-cases/:id/runs` 按这些权威断言执行并记录历史。轨迹不直接等于测试，浏览器运行器也不负责 Agent 自主规划。
+
+### 通用 setup fixture
+
+`environment.baseUrl` 定义当次环境的基址，`startUrl`、setup 导航和 URL 断言都可以使用相对路径。`setup.steps` 只接受通用 `navigate`、`act`、`assert` 操作：
+
+```json
+{
+  "title": "authenticated workspace smoke",
+  "environment": {
+    "name": "local",
+    "baseUrl": "http://127.0.0.1:3000"
+  },
+  "setup": {
+    "steps": [
+      { "operation": "navigate", "url": "/login" },
+      {
+        "operation": "act",
+        "action": "fill",
+        "target": { "label": "Username" },
+        "valueFrom": { "env": "EVAL_TEST_USERNAME" }
+      },
+      {
+        "operation": "act",
+        "action": "fill",
+        "target": { "label": "Password" },
+        "valueFrom": { "secretRef": "qa/login/password" }
+      },
+      {
+        "operation": "act",
+        "action": "click",
+        "target": { "role": "button", "name": "Sign in" }
+      },
+      { "operation": "assert", "type": "url", "expected": "/dashboard" }
+    ]
+  },
+  "startUrl": "/workspace",
+  "steps": [],
+  "assertions": [
+    { "type": "visible", "target": { "testId": "workspace" } }
+  ]
+}
+```
+
+`valueFrom.env` 直接读取 browser-runner 进程的同名环境变量。`valueFrom.secretRef` 是不透明引用，由嵌入服务时传入的 `secretResolver(ref)` 解析；未注册解析器时闭合失败，不会回退到明文。
+
+### 可交错的测试步骤
+
+顶层 `steps` 与 setup 使用同一组 `operation: navigate | act | assert` 语义，因此可以表达“保存 → 刷新 → 断言持久化 → 恢复原值”这类有顺序要求的验收。旧资产中没有 `operation` 的步骤仍按 `act` 执行。
+
+```json
+{
+  "environment": { "baseUrl": "http://127.0.0.1:3000" },
+  "steps": [
+    { "operation": "act", "action": "click", "target": { "role": "button", "name": "Save" } },
+    { "operation": "navigate", "url": "/record/1" },
+    { "operation": "assert", "type": "text", "target": { "label": "Name" }, "expected": "saved value" },
+    { "operation": "act", "action": "click", "target": { "role": "button", "name": "Restore" } }
+  ]
+}
+```
+
+步骤失败后立即短路，后续步骤和最终 `assertions` 不会执行；已执行步骤的成功/失败证据按原顺序保留。
+
+安全约束：
+
+- setup 中的 `fill` 禁止持久化 `value`，必须使用 `valueFrom.env` 或 `valueFrom.secretRef`。
+- 解析后的值使用非可枚举的运行时属性传给 Playwright，不进入测试资产、操作请求证据或 run 历史。运行结果还会使用当次解析值做二次脱敏。
+- 含运行时输入的 setup 必须由该次 run 新建独立 session；不允许复用已开启 trace 的外部 session。
+- 这类 run 关闭 Playwright trace，并且不保存携带运行时输入的操作所返回的截图，避免 trace snapshot/action 或像素证据泄露输入值；仍保留每步脱敏操作证据、断言结果和完整的顺序/耗时记录。
+- 密码、cookie、localStorage、Authorization 请求头和 POST body 不作为浏览器证据采集。
 
 ## 验证
 

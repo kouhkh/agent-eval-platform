@@ -83,7 +83,11 @@ export function createBrowserService(options = {}) {
     profileRoot: options.profileRoot || path.join(dataRoot, "profiles"),
   });
   const manager = options.manager || new SessionManager({ runner, evidenceStore, traceRoot: path.join(dataRoot, "traces"), leaseMs: options.leaseMs, heartbeatMs: options.heartbeatMs });
-  const controlPlane = options.controlPlane || new TestControlPlane({ statePath: path.join(dataRoot, "test-cases.json") });
+  const controlPlane = options.controlPlane || new TestControlPlane({
+    statePath: path.join(dataRoot, "test-cases.json"),
+    env: options.env,
+    secretResolver: options.secretResolver,
+  });
   const integrations = Array.isArray(options.integrations) ? options.integrations.map((item) => ({
     id: String(item.id || ""),
     version: String(item.version || "0.1.0"),
@@ -116,10 +120,22 @@ export function createBrowserService(options = {}) {
             "POST /api/sessions/:id/reconnect": "显式重建 stale session；不会对原 tab 盲重试。",
             "GET /api/sessions/:id/trace": "停止并保存 Playwright trace；默认随后可重新建立 session。",
             "GET /api/test-cases": "列出控制平面中的测试资产。",
-            "POST /api/test-cases": "创建测试资产（轨迹/步骤/断言/环境/门禁策略）。",
+            "POST /api/test-cases": "创建测试资产（setup/步骤/断言/环境/门禁策略）。",
             "POST /api/test-cases/:id/runs": "按已确认步骤和断言执行一个测试资产。",
           },
           response: { operationId: "string", sessionId: "string", tabId: "string", status: "succeeded|failed|cancelling", elapsedMs: "number", phase: "string", errorCode: "string|null", evidenceRefs: "string[]" },
+          setupFixture: {
+            environment: { baseUrl: "http(s) URL", locale: "optional locale" },
+            operations: ["navigate", "act", "assert"],
+            runtimeInput: ["valueFrom.env", "valueFrom.secretRef"],
+            inlineFillValue: "forbidden",
+            playwrightTraceWithRuntimeInput: "suppressed",
+          },
+          testSteps: {
+            operations: ["navigate", "act", "assert"],
+            legacyWithoutOperation: "act",
+            failureBehavior: "short-circuit",
+          },
           integrations,
         });
         return;
