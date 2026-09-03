@@ -1,0 +1,29 @@
+schemaVersion: 1
+
+runtime:
+  node: ">=22.19.0"
+
+dsh:
+  repository: https://github.com/kouhkh/deepseek-harness
+  upstream: https://github.com/deepseek-ai/deepseek-harness
+  branch: feature/headless-jsonl-observability
+  upstreamBaseCommit: 7169660d330452d32c91bb2e4788a9b8c2f83a18
+  integrationCommit: a4170c968ee83a0330429e2c222f4002a9b57214
+  sourceArchiveSha256: 80c25eb9ba6794c996c413b58208f286e649a4a42d337ea692f72d002c4b9380
+  requiredContract:
+    streamEnvironment: DSH_STREAM_JSON=1
+    records:
+      - session_event
+      - result
+
+pinask:
+  repository: https://github.com/kouhkh/pinask
+  branch: main
+  commit: 57df33223d8d487edbbc3cf9564f3901339a1c51
+
+browserRunner:
+  package: "@agent-eval-platform/browser-runner"
+  playwright: 1.62.1
+
+# The tested application's source revision belongs to each test case/run as
+# sourceRevision. It is intentionally not a global platform dependency.

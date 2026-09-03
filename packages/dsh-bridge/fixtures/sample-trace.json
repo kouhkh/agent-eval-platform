@@ -1,0 +1,17 @@
+{
+  "title": "计算书同步与技术规格书改写混合回归",
+  "goal": "确认快速同步链路可稳定保存，同时真实 AI/GPU 改写能够完成并生成待确认预览",
+  "environment": "dev",
+  "recordedAt": "2026-08-28T10:00:00+08:00",
+  "durationMs": 126000,
+  "events": [
+    { "id": "step-1", "offsetMs": 900, "action": "change", "target": "combobox:同步来源", "value": "安全计算结果" },
+    { "id": "step-2", "offsetMs": 1800, "action": "change", "target": "combobox:方案计算书", "value": "模板工程-盘扣式 V1" },
+    { "id": "step-3", "offsetMs": 2600, "action": "click", "target": "button:确认同步" },
+    { "id": "step-4", "offsetMs": 3100, "action": "observation", "target": "document", "observation": "同步成功：正文出现所选来源的计算书内容", "metadata": { "baselineDurationMs": 42000, "dependency": "database", "oracle": "success-banner-and-persisted-selection" } },
+    { "id": "step-5", "offsetMs": 4700, "action": "click", "target": "button:开始真实依赖改写" },
+    { "id": "step-6", "offsetMs": 4900, "action": "observation", "target": "document", "observation": "技术规格书改写进入运行中", "metadata": { "dependency": "gpu-docling, stanza, llm", "queue": "technical_spec_rewrite" } },
+    { "id": "step-7", "offsetMs": 6100, "action": "observation", "target": "document", "observation": "改写完成并出现待确认预览", "metadata": { "baselineDurationMs": 480000, "dependency": "gpu-docling, stanza, llm", "oracle": "terminal-job-and-preview" } }
+  ],
+  "notes": ["演示等待时间被压缩；baselineDurationMs 是用于分层的既有实测基线。"]
+}

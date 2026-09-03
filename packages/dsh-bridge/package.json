@@ -1,0 +1,15 @@
+{
+  "name": "@agent-eval-platform/dsh-bridge",
+  "version": "0.2.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "start:fake": "DSH_AGENT_FAKE=1 node server.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}
