@@ -171,6 +171,9 @@ export class PlaywrightRunner {
 
   async createContext(options = {}) {
     let context;
+    const contextOptions = {};
+    if (typeof options.baseURL === "string" && options.baseURL.trim()) contextOptions.baseURL = options.baseURL;
+    if (typeof options.locale === "string" && options.locale.trim()) contextOptions.locale = options.locale;
     if (options.profileDir) {
       const profileDir = path.resolve(options.profileDir);
       if (!(profileDir === this.profileRoot || profileDir.startsWith(`${this.profileRoot}${path.sep}`))) {
@@ -183,11 +186,11 @@ export class PlaywrightRunner {
         headless: this.headless,
         executablePath: this.executablePath,
         args: this.browserArgs,
-        baseURL: options.baseURL,
+        ...contextOptions,
       });
     } else {
       const browser = await this.launch();
-      context = await browser.newContext({ baseURL: options.baseURL, locale: options.locale });
+      context = await browser.newContext(contextOptions);
     }
     this.contexts.add(context);
     context.on?.("close", () => this.contexts.delete(context));

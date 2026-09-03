@@ -115,3 +115,24 @@ test("real Playwright runner enforces approval, dialog intent, bounded inspectio
     await rm(item.root, { recursive: true, force: true });
   }
 });
+
+test("persistent session reconnects when baseURL and locale are unset", { timeout: 30_000 }, async () => {
+  const item = await realManager();
+  try {
+    const profileDir = path.join(item.root, "profiles", "reconnect-without-base-url");
+    const created = await item.manager.createSession({ profileDir });
+    const oldTabId = created.tabId;
+
+    const reconnected = await item.manager.reconnect(created.sessionId);
+
+    assert.equal(reconnected.state, "ready");
+    assert.notEqual(reconnected.tabId, oldTabId);
+    assert.equal(item.manager.get(created.sessionId).baseURL, null);
+    assert.equal(item.manager.get(created.sessionId).locale, null);
+    assert.equal(reconnected.reconnectCount, 1);
+  } finally {
+    await item.manager.dispose();
+    await item.runner.close();
+    await rm(item.root, { recursive: true, force: true });
+  }
+});

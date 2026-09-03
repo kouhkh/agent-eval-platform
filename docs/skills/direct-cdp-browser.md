@@ -13,6 +13,8 @@ The skill id is retained for compatibility. Despite the historical name, the can
 - Use an ephemeral context by default. A persistent profile must be dedicated to this runner and located below `packages/browser-runner/data/profiles`; never copy a normal Chrome/Codex profile.
 - Use REST, CLI or MCP only. Do not attach an unrecorded Playwright/CDP client and claim audited results.
 - Every mutating `act` must include a concise user-approved `approvedScope` describing target and purpose.
+- `approvedScope` authorizes only the described UI mutation; it does not confer a business role or approval authority. Agent/browser checks are 研发自测, not the tester acceptance action used by the Feishu tracker. They may support moving an explicitly authorized record to “待验收”, but must not be used to decide or write “验收通过，待上线”“验收不通过”“复测未通过” or other 上线/关闭 decisions. A request such as “测完没问题就更新飞书” is not a tester decision.
+- Agent/browser evidence must not manufacture a tester decision. After a fresh fix is deployed and the user explicitly requests another acceptance round, a negative decision (`验收不通过`, `复测未通过`, or `仍需改进`) may be moved back to `待验收`; accepted, release-ready, released, and closed statuses remain protected.
 - If a native dialog is expected, declare `dialogAction: "accept"` or `"dismiss"`. An undeclared dialog is dismissed and the operation fails with `DIALOG_REQUIRED`.
 - A deadline or cancellation makes the session stale. Inspect the result and explicitly reconnect only when retrying is justified.
 - A successful action only proves that the action completed. Product correctness comes from a separately recorded assertion.
