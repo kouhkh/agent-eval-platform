@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { BrowserRunnerError } from "./operation-budget.mjs";
+import { SENSITIVE_SETUP_SESSION } from "./session-manager.mjs";
 import { attachRuntimeValue, redactRuntimeValues, runtimeSensitiveValues } from "./runtime-values.mjs";
 import {
   hasRuntimeSetupValues,
@@ -24,6 +25,9 @@ async function executeOperationStep(step, options) {
     defaultOperation: options.defaultOperation,
   });
   const request = { ...materialized.input, ...options.operationInput };
+  if (materialized.operation === "act" && !request.approvedScope && !request.authorization && options.approvedScope) {
+    request.approvedScope = options.approvedScope;
+  }
   const sensitiveValues = runtimeSensitiveValues(materialized.input);
   for (const sensitiveValue of sensitiveValues) attachRuntimeValue(request, "value", sensitiveValue);
   const result = materialized.operation === "navigate"
@@ -44,6 +48,7 @@ function normalizeCase(input = {}, existing = {}) {
     title: String(input.title ?? existing.title ?? "未命名回归用例").slice(0, 240),
     description: String(input.description ?? existing.description ?? "").slice(0, 2000),
     project: String(input.project ?? existing.project ?? "").slice(0, 120),
+    approvedScope: String(input.approvedScope ?? existing.approvedScope ?? "").trim().slice(0, 500),
     startUrl: String(input.startUrl ?? existing.startUrl ?? "").slice(0, 2000),
     setup: normalizeSetup(input.setup, existing.setup),
     steps,
@@ -108,6 +113,7 @@ export class TestControlPlane {
     const totalBudgetMs = Number(input.totalBudgetMs);
     const totalDeadlineAt = Number.isFinite(totalBudgetMs) && totalBudgetMs > 0 ? startedAt + totalBudgetMs : undefined;
     const operationInput = () => ({ deadlineMs: input.deadlineMs, deadlineAt: totalDeadlineAt, totalBudgetMs: input.totalBudgetMs });
+    const approvedScope = String(input.approvedScope || testCase.approvedScope || "").trim().slice(0, 500);
     const setup = testCase.setup || { steps: [] };
     const hasRuntimeValues = hasRuntimeSetupValues(setup) || hasRuntimeOperationValues(testCase.steps);
     const baseUrl = input.baseUrl
@@ -147,7 +153,7 @@ export class TestControlPlane {
           profileDir: input.profileDir,
           baseURL: baseUrl || undefined,
           locale: testCase.environment?.locale,
-          trace: !hasRuntimeValues,
+          ...(hasRuntimeValues ? { [SENSITIVE_SETUP_SESSION]: true } : {}),
         });
         sessionId = session.sessionId;
         ownedSession = true;
@@ -159,6 +165,7 @@ export class TestControlPlane {
           baseUrl,
           env: this.env,
           secretResolver: this.secretResolver,
+          approvedScope,
           operationInput: operationInput(),
         });
         operations.push(safeResult);
@@ -181,6 +188,7 @@ export class TestControlPlane {
           env: this.env,
           secretResolver: this.secretResolver,
           defaultOperation: "act",
+          approvedScope,
           operationInput: operationInput(),
         });
         operations.push(safeResult);

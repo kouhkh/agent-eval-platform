@@ -23,7 +23,22 @@ pinask:
 
 browserRunner:
   package: "@agent-eval-platform/browser-runner"
+  version: 0.2.0
+  sourcePath: packages/browser-runner
+  provider: playwright
   playwright: 1.62.1
+  runtimeContract: 1
+  absorbedMigrationSource:
+    repository: https://github.com/kouhkh/agent-browser-runtime
+    commit: 8917906
+    status: frozen-history-only
+
+codexSkillAdapter:
+  id: direct-cdp-browser
+  compatibilityVersion: 1
+  canonicalInstructions: docs/skills/direct-cdp-browser.md
+  installedPath: ~/.codex/skills/direct-cdp-browser/SKILL.md
+  runtimeSource: packages/browser-runner
 
 # The tested application's source revision belongs to each test case/run as
 # sourceRevision. It is intentionally not a global platform dependency.

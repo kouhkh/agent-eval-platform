@@ -24,6 +24,7 @@ PinAsk / REST / CLI / MCP / CI
 - 业务差异优先用测试资产中的 URL、locator、API 和文件断言表达，不为每个项目新建 adapter 仓库。只有标准协议无法表达的领域能力才作为可选集成注册。
 - 被测应用的版本记在每次用例执行的 `sourceRevision`，不写入平台全局版本清单。
 - 平台依赖版本记在 [`compatibility.yaml`](compatibility.yaml)，用于复现 DSH、PinAsk 和 Playwright 的组合。
+- `packages/browser-runner` 是浏览器运行时唯一正式实现。旧 `agent-browser-runtime@8917906` 的安全契约已迁入此包，旧仓库只保留历史，不再双轨开发。
 - 凭据、会话 profile、任务历史和证据目录均不进入 Git。
 - 登录等前置条件用通用 `setup` fixture 表达，而不是被测系统 adapter。输入值可在运行时通过环境变量或可替换的 `secretRef` 解析器注入；明文不写入测试资产、REST 请求、运行结果或证据。
 
@@ -49,4 +50,4 @@ npm run start:dsh
 
 ## 当前状态
 
-当前是开发态 POC：已有桥接服务、并行 Git worktree 修改、任务恢复、基本浏览器 session 管理、用例 CRUD 和证据存储。完整权限模型、多租户隔离、生产排期和稳定的公开 API 仍未定型。
+当前是开发态 POC：已有桥接服务、并行 Git worktree 修改、任务恢复、浏览器 session 管理、用例 CRUD，以及强制的截图/trace/结构化证据。完整权限模型、多租户隔离、生产排期和稳定的公开 API 仍未定型。

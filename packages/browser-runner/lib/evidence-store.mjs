@@ -5,7 +5,7 @@ import path from "node:path";
 export function sanitizeUrl(input) {
   try {
     const value = new URL(String(input));
-    return `${value.origin}${value.pathname}`;
+    return value.origin === "null" ? `${value.protocol}${value.pathname}` : `${value.origin}${value.pathname}`;
   } catch {
     return String(input || "").slice(0, 1000);
   }
@@ -46,6 +46,23 @@ function sanitizeNetwork(items) {
     status: Number.isInteger(item?.status) ? item.status : null,
     failed: item?.failed === true,
   }));
+}
+
+function publicScreenshot(item) {
+  if (!item || typeof item !== "object") return null;
+  const output = { ...item };
+  delete output.buffer;
+  return output;
+}
+
+export function publicOperationResult(result) {
+  if (!result || typeof result !== "object") return result;
+  const output = { ...result };
+  delete output.screenshotBuffer;
+  delete output.domSnapshot;
+  delete output.network;
+  if (Array.isArray(output.screenshots)) output.screenshots = output.screenshots.map(publicScreenshot).filter(Boolean);
+  return output;
 }
 
 export class EvidenceStore {
@@ -101,17 +118,30 @@ export class EvidenceStore {
 
   async saveOperationResult(sessionId, operationId, result, options = {}) {
     const refs = [];
-    const hasRuntimeSensitiveValues = Array.isArray(options.sensitiveValues) && options.sensitiveValues.some((value) => String(value || ""));
+    const hasRuntimeSensitiveValues = options.suppressScreenshots === true || (Array.isArray(options.sensitiveValues) && options.sensitiveValues.some((value) => String(value || "")));
     if (result?.domSnapshot) refs.push(await this.writeJson(sessionId, operationId, "dom-snapshot", result.domSnapshot, options));
     if (result?.network) refs.push(await this.writeJson(sessionId, operationId, "network", sanitizeNetwork(result.network), options));
     if (result?.screenshotBuffer && !hasRuntimeSensitiveValues) {
       const saved = await this.writeBuffer(sessionId, operationId, "screenshot", result.screenshotBuffer, "png");
       refs.push(saved.ref);
     }
-    const publicResult = { ...result };
-    delete publicResult.screenshotBuffer;
-    delete publicResult.domSnapshot;
-    delete publicResult.network;
+    const screenshotMetadata = [];
+    for (const [index, screenshot] of (Array.isArray(result?.screenshots) ? result.screenshots : []).entries()) {
+      const metadata = publicScreenshot(screenshot);
+      if (metadata) screenshotMetadata.push(metadata);
+      if (!hasRuntimeSensitiveValues && Buffer.isBuffer(screenshot?.buffer)) {
+        const phase = safePart(screenshot.phase || String(index + 1), String(index + 1));
+        const saved = await this.writeBuffer(sessionId, operationId, `screenshot-${String(index + 1).padStart(2, "0")}-${phase}`, screenshot.buffer, "png");
+        refs.push(saved.ref);
+      }
+    }
+    if (screenshotMetadata.length) {
+      refs.push(await this.writeJson(sessionId, operationId, "screenshots", {
+        suppressed: hasRuntimeSensitiveValues,
+        items: screenshotMetadata,
+      }, options));
+    }
+    const publicResult = publicOperationResult(result);
     refs.push(await this.writeJson(sessionId, operationId, "result", publicResult, options));
     return refs;
   }

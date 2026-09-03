@@ -1,0 +1,172 @@
+{
+  "id": "planora-knowledge-overhaul-local-readonly-v1",
+  "title": "Planora 知识库专项本地只读闭环",
+  "description": "自动登录后依次验证典型项目投标施组正文、施工施组正文、两项技术响应正文和技术响应库统计。所有业务步骤均为只读。",
+  "project": "planora",
+  "approvedScope": "使用指定本地测试账号登录，仅点击导航和读取已有页面内容",
+  "environment": {
+    "name": "local-3011",
+    "baseUrl": "http://localhost:3011",
+    "locale": "zh-CN"
+  },
+  "sourceRevision": "5236305c3edbe8b06c3945ded7639c002c44ea23",
+  "setup": {
+    "steps": [
+      {
+        "operation": "navigate",
+        "url": "/login"
+      },
+      {
+        "operation": "act",
+        "action": "fill",
+        "target": {
+          "selector": "#username"
+        },
+        "valueFrom": {
+          "env": "PLANORA_TEST_USERNAME"
+        }
+      },
+      {
+        "operation": "act",
+        "action": "fill",
+        "target": {
+          "selector": "#password"
+        },
+        "valueFrom": {
+          "env": "PLANORA_TEST_PASSWORD"
+        }
+      },
+      {
+        "operation": "act",
+        "action": "click",
+        "target": {
+          "selector": ".login-button"
+        }
+      },
+      {
+        "operation": "assert",
+        "type": "url",
+        "expected": "/dashboard/projects"
+      }
+    ]
+  },
+  "startUrl": "/dashboard/projects/cmszhlkqv07g4fbbnn0hqpljk?tab=bid_chapters",
+  "steps": [
+    {
+      "operation": "assert",
+      "type": "visible",
+      "target": {
+        "selector": "div[title=\"1.1.1施工目标\"]"
+      }
+    },
+    {
+      "operation": "act",
+      "action": "click",
+      "target": {
+        "selector": "div[title=\"1.1.1施工目标\"] > button.min-w-0.flex-1"
+      }
+    },
+    {
+      "operation": "assert",
+      "type": "text",
+      "target": {
+        "testId": "chapter-wysiwyg-editor"
+      },
+      "expected": "计划总工期为210日历天"
+    },
+    {
+      "operation": "navigate",
+      "url": "/dashboard/projects/cmszhlkqv07g4fbbnn0hqpljk?tab=construction_chapters"
+    },
+    {
+      "operation": "assert",
+      "type": "visible",
+      "target": {
+        "selector": "div[title=\"2.1工程名称\"]"
+      }
+    },
+    {
+      "operation": "act",
+      "action": "click",
+      "target": {
+        "selector": "div[title=\"2.1工程名称\"] > button.min-w-0.flex-1"
+      }
+    },
+    {
+      "operation": "assert",
+      "type": "text",
+      "target": {
+        "testId": "chapter-wysiwyg-editor"
+      },
+      "expected": "中储粮启东直属库有限公司建仓项目MEC工程"
+    },
+    {
+      "operation": "navigate",
+      "url": "/dashboard/projects/cmszhlkqv07g4fbbnn0hqpljk?tab=device_response&responseView=device_response&device=带式输送机"
+    },
+    {
+      "operation": "assert",
+      "type": "visible",
+      "target": {
+        "testId": "device-response-workspace-shell"
+      }
+    },
+    {
+      "operation": "assert",
+      "type": "text",
+      "target": {
+        "testId": "chapter-wysiwyg-editor"
+      },
+      "expected": "品牌响应原则"
+    },
+    {
+      "operation": "navigate",
+      "url": "/dashboard/projects/cmszhlkqv07g4fbbnn0hqpljk?tab=device_response&responseView=device_response&device=刮板输送机"
+    },
+    {
+      "operation": "assert",
+      "type": "text",
+      "target": {
+        "testId": "chapter-wysiwyg-editor"
+      },
+      "expected": "本次投标埋刮板输送机品牌响应严格遵循"
+    },
+    {
+      "operation": "navigate",
+      "url": "/dashboard/knowledge"
+    },
+    {
+      "operation": "act",
+      "action": "click",
+      "target": {
+        "role": "tab",
+        "name": "技术响应库",
+        "exact": true
+      }
+    },
+    {
+      "operation": "assert",
+      "type": "text",
+      "target": {
+        "text": "正文资产 24 条",
+        "exact": false
+      },
+      "expected": "正文资产 24 条"
+    },
+    {
+      "operation": "assert",
+      "type": "text",
+      "target": {
+        "text": "目录映射 111 条",
+        "exact": false
+      },
+      "expected": "目录映射 111 条"
+    }
+  ],
+  "assertions": [],
+  "policy": {
+    "gate": true,
+    "nightly": false,
+    "retries": 0
+  }
+}

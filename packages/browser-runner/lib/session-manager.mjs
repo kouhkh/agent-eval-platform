@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { asBrowserRunnerError, BrowserRunnerError, createOperationBudget } from "./operation-budget.mjs";
-import { sanitizeUrl } from "./evidence-store.mjs";
+import { publicOperationResult, sanitizeUrl } from "./evidence-store.mjs";
 import { runtimeSensitiveValues } from "./runtime-values.mjs";
+
+export const SENSITIVE_SETUP_SESSION = Symbol("agent-eval-sensitive-setup-session");
 
 function nowIso() {
   return new Date().toISOString();
@@ -12,6 +14,7 @@ function nowIso() {
 function publicSession(session) {
   return {
     sessionId: session.sessionId,
+    instanceId: session.instanceId,
     tabId: session.tabId,
     state: session.state,
     createdAt: session.createdAt,
@@ -24,6 +27,8 @@ function publicSession(session) {
     traceRefs: session.traceRefs || [],
     traceError: session.traceError || null,
     staleReason: session.staleReason || null,
+    reconnectCount: session.reconnectCount || 0,
+    pixelEvidenceSuppressed: session.suppressPixelEvidence === true,
     currentOperationId: session.operation?.operationId || null,
   };
 }
@@ -54,6 +59,7 @@ export class SessionManager {
     this.heartbeatMs = Math.max(500, Number(options.heartbeatMs) || 5_000);
     this.sessions = new Map();
     this.operations = new Map();
+    this.profileOwners = new Map();
     this.timer = setInterval(() => { void this.heartbeat(); }, this.heartbeatMs);
     this.timer.unref?.();
     this.runner.onDisconnected = () => this.markAllStale("浏览器进程已断开，当前 session 需要重新建立。");
@@ -105,23 +111,49 @@ export class SessionManager {
   }
 
   async createSession(options = {}) {
+    if (options.trace === false && options[SENSITIVE_SETUP_SESSION] !== true) {
+      throw new BrowserRunnerError("TRACE_POLICY_FORBIDDEN", "普通 session 不允许关闭强制 trace。", { statusCode: 403, phase: "trace" });
+    }
     const sessionId = String(options.sessionId || randomUUID());
+    if (this.sessions.has(sessionId) && this.sessions.get(sessionId)?.state !== "closed") {
+      throw new BrowserRunnerError("SESSION_ALREADY_EXISTS", "指定 sessionId 已被使用。", { statusCode: 409, phase: "session" });
+    }
     const tabId = String(options.tabId || `tab-${randomUUID()}`);
     const profile = options.profileDir ? "persistent" : "ephemeral";
-    const context = await this.runner.createContext({
-      sessionId,
-      profileDir: options.profileDir,
-      baseURL: options.baseURL,
-      locale: options.locale,
-    });
-    const page = await this.runner.newPage(context);
+    const profileDir = options.profileDir ? path.resolve(options.profileDir) : null;
+    const profileOwner = profileDir ? this.profileOwners.get(profileDir) : null;
+    if (profileOwner && profileOwner !== sessionId) {
+      throw new BrowserRunnerError("PROFILE_BUSY", "专用浏览器 profile 已被另一个 session 使用。", { statusCode: 409, phase: "lease", details: { ownerSessionId: profileOwner } });
+    }
+    if (profileDir) this.profileOwners.set(profileDir, sessionId);
+    let context;
+    try {
+      context = await this.runner.createContext({
+        sessionId,
+        profileDir,
+        baseURL: options.baseURL,
+        locale: options.locale,
+      });
+    } catch (error) {
+      if (profileDir) this.profileOwners.delete(profileDir);
+      throw error;
+    }
+    let page;
+    try {
+      page = await this.runner.newPage(context);
+    } catch (error) {
+      await this.runner.closeContext(context).catch(() => {});
+      if (profileDir) this.profileOwners.delete(profileDir);
+      throw error;
+    }
     const session = {
       sessionId,
+      instanceId: randomUUID(),
       tabId,
       context,
       page,
       profile,
-      profileDir: options.profileDir || null,
+      profileDir,
       baseURL: options.baseURL || null,
       locale: options.locale || null,
       state: "new",
@@ -134,16 +166,22 @@ export class SessionManager {
       networkCursor: 0,
       operation: null,
       staleReason: null,
+      reconnectCount: 0,
+      traceEnabled: options[SENSITIVE_SETUP_SESSION] !== true,
+      suppressPixelEvidence: options[SENSITIVE_SETUP_SESSION] === true,
     };
     this.sessions.set(sessionId, session);
     try {
-      if (options.trace !== false) {
+      if (session.traceEnabled) {
         await this.runner.startTrace(context);
         session.traceActive = true;
       }
     } catch (error) {
-      // Trace support is valuable but not required to operate a browser.
       session.traceError = asBrowserRunnerError(error, { phase: "trace", statusCode: 502 }).toJSON();
+      await this.runner.closeContext(context).catch(() => {});
+      this.sessions.delete(sessionId);
+      if (profileDir) this.profileOwners.delete(profileDir);
+      throw new BrowserRunnerError("TRACE_REQUIRED", "浏览器 trace 无法启动，拒绝创建无审计 session。", { statusCode: 502, phase: "trace", details: session.traceError });
     }
     session.state = "ready";
     if (options.url) {
@@ -162,6 +200,7 @@ export class SessionManager {
     if (session.operation) session.operation.budget.cancel("cancel");
     if (session.traceActive) await this.stopTrace(session).catch(() => {});
     await this.runner.closeContext(session.context).catch(() => {});
+    if (session.profileDir && this.profileOwners.get(session.profileDir) === sessionId) this.profileOwners.delete(session.profileDir);
     session.state = "closed";
     session.updatedAt = nowIso();
     session.operation = null;
@@ -174,18 +213,52 @@ export class SessionManager {
     await this.runner.closeContext(session.context).catch(() => {});
     session.state = "new";
     session.updatedAt = nowIso();
+    session.instanceId = randomUUID();
     session.tabId = `tab-${randomUUID()}`;
-    session.context = await this.runner.createContext({
-      sessionId,
-      profileDir: options.profileDir || session.profileDir,
-      baseURL: options.baseURL || session.baseURL,
-      locale: options.locale || session.locale,
-    });
-    session.page = await this.runner.newPage(session.context);
+    const reconnectProfileDir = options.profileDir ? path.resolve(options.profileDir) : session.profileDir;
+    if (reconnectProfileDir && reconnectProfileDir !== session.profileDir) {
+      const owner = this.profileOwners.get(reconnectProfileDir);
+      if (owner && owner !== sessionId) {
+        session.state = "stale";
+        session.staleReason = "重连目标 profile 正在被其他 session 使用。";
+        throw new BrowserRunnerError("PROFILE_BUSY", session.staleReason, { statusCode: 409, phase: "lease", details: { ownerSessionId: owner } });
+      }
+    }
+    let newContext;
+    try {
+      newContext = await this.runner.createContext({
+        sessionId,
+        profileDir: reconnectProfileDir,
+        baseURL: options.baseURL || session.baseURL,
+        locale: options.locale || session.locale,
+      });
+      session.page = await this.runner.newPage(newContext);
+    } catch (error) {
+      if (newContext) await this.runner.closeContext(newContext).catch(() => {});
+      session.state = "stale";
+      session.staleReason = "浏览器 session 重连失败。";
+      throw error;
+    }
+    if (session.profileDir && session.profileDir !== reconnectProfileDir && this.profileOwners.get(session.profileDir) === sessionId) this.profileOwners.delete(session.profileDir);
+    if (reconnectProfileDir) this.profileOwners.set(reconnectProfileDir, sessionId);
+    session.profileDir = reconnectProfileDir;
+    session.profile = reconnectProfileDir ? "persistent" : "ephemeral";
+    session.context = newContext;
     session.traceActive = false;
     session.traceError = null;
-    try { await this.runner.startTrace(session.context); session.traceActive = true; } catch (error) { session.traceError = asBrowserRunnerError(error, { phase: "trace", statusCode: 502 }).toJSON(); }
+    if (session.traceEnabled) {
+      try { await this.runner.startTrace(session.context); session.traceActive = true; }
+      catch (error) {
+        session.traceError = asBrowserRunnerError(error, { phase: "trace", statusCode: 502 }).toJSON();
+        await this.runner.closeContext(session.context).catch(() => {});
+        session.state = "stale";
+        session.staleReason = "浏览器 trace 无法重新建立。";
+        throw new BrowserRunnerError("TRACE_REQUIRED", "浏览器 trace 无法重新建立。", { statusCode: 502, phase: "trace", details: session.traceError });
+      }
+    }
     session.state = "ready";
+    session.staleReason = null;
+    session.reconnectCount += 1;
     session.lastHeartbeatAt = nowIso();
     session.leaseExpiresAt = new Date(Date.now() + this.leaseMs).toISOString();
     if (options.url) {
@@ -271,18 +344,32 @@ export class SessionManager {
     this.operations.set(operationId, session);
     let evidenceRefs = [];
     const started = Date.now();
+    const sensitiveValues = runtimeSensitiveValues(input);
     try {
       const evidenceBase = this.evidenceStore ? await this.evidenceStore.begin({ operationId, sessionId, tabId: session.tabId, kind, startedAt: nowIso(), request: input }) : null;
       if (evidenceBase) evidenceRefs.push(evidenceBase);
       const data = await budget.run(() => handler({ page: session.page, context: session.context, session, budget }), { onCancel: () => this.runner.cancelPage(session.page) });
-      if (data && this.evidenceStore) evidenceRefs = [...evidenceRefs, ...(await this.evidenceStore.saveOperationResult(sessionId, operationId, data, { sensitiveValues: runtimeSensitiveValues(input) }))];
-      return { operationId, sessionId, tabId: session.tabId, status: "succeeded", elapsedMs: Date.now() - started, phase: "completed", errorCode: null, evidenceRefs, data };
+      if (data && this.evidenceStore) evidenceRefs = [...evidenceRefs, ...(await this.evidenceStore.saveOperationResult(sessionId, operationId, data, { sensitiveValues, suppressScreenshots: session.suppressPixelEvidence }))];
+      return { operationId, sessionId, tabId: session.tabId, status: "succeeded", elapsedMs: Date.now() - started, phase: "completed", errorCode: null, evidenceRefs, data: publicOperationResult(data) };
     } catch (error) {
       const normalized = asBrowserRunnerError(error, { operationId, sessionId, tabId: session.tabId, phase: kind });
+      if (this.evidenceStore && error?.evidenceResult) {
+        try { evidenceRefs = [...evidenceRefs, ...(await this.evidenceStore.saveOperationResult(sessionId, operationId, error.evidenceResult, { sensitiveValues, suppressScreenshots: session.suppressPixelEvidence }))]; } catch {}
+      }
+      if (this.evidenceStore) {
+        try { evidenceRefs.push(await this.evidenceStore.writeJson(sessionId, operationId, "error", normalized.toJSON(), { sensitiveValues })); } catch {}
+      }
       if (normalized.code === "BROWSER_OPERATION_FAILED" && /Target page, context or browser has been closed/i.test(normalized.message)) {
         session.state = "closed";
         normalized.code = "TAB_CLOSED";
         normalized.phase = "session";
+      }
+      if (["DEADLINE_EXCEEDED", "CANCELLED"].includes(normalized.code)) {
+        session.state = "stale";
+        session.staleReason = normalized.code === "DEADLINE_EXCEEDED"
+          ? "浏览器操作超时；旧 tab 已淘汰，必须显式 reconnect。"
+          : "浏览器操作被取消；旧 tab 已淘汰，必须显式 reconnect。";
+        await this.runner.closeContext(session.context).catch(() => {});
       }
       return errorEnvelope(normalized, meta, Date.now() - started, evidenceRefs);
     } finally {

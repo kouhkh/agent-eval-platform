@@ -1,0 +1,181 @@
+{
+  "id": "planora-knowledge-strategy-save-restore-local-v1",
+  "title": "Planora 知识策略修改、刷新与恢复",
+  "description": "写操作资产：仅修改已停用的专用测试策略“培训test0819”。临时改名并保存，刷新确认持久化，再恢复原名。若在恢复前中断，必须搜索原名前缀并人工确认已恢复。",
+  "project": "planora",
+  "approvedScope": "仅允许修改并恢复本地已停用测试策略“培训test0819”的名称",
+  "environment": {
+    "name": "local-3011",
+    "baseUrl": "http://localhost:3011",
+    "locale": "zh-CN"
+  },
+  "sourceRevision": "5236305c3edbe8b06c3945ded7639c002c44ea23",
+  "setup": {
+    "steps": [
+      {
+        "operation": "navigate",
+        "url": "/login"
+      },
+      {
+        "operation": "act",
+        "action": "fill",
+        "target": {
+          "selector": "#username"
+        },
+        "valueFrom": {
+          "env": "PLANORA_TEST_USERNAME"
+        }
+      },
+      {
+        "operation": "act",
+        "action": "fill",
+        "target": {
+          "selector": "#password"
+        },
+        "valueFrom": {
+          "env": "PLANORA_TEST_PASSWORD"
+        }
+      },
+      {
+        "operation": "act",
+        "action": "click",
+        "target": {
+          "selector": ".login-button"
+        }
+      },
+      {
+        "operation": "assert",
+        "type": "url",
+        "expected": "/dashboard/projects"
+      }
+    ]
+  },
+  "startUrl": "/dashboard/knowledge",
+  "steps": [
+    {
+      "operation": "act",
+      "action": "click",
+      "target": {
+        "role": "tab",
+        "name": "策略库",
+        "exact": true
+      }
+    },
+    {
+      "operation": "act",
+      "action": "fill",
+      "target": {
+        "placeholder": "搜索策略名或章节目录名"
+      },
+      "value": "培训test0819"
+    },
+    {
+      "operation": "act",
+      "action": "click",
+      "target": {
+        "selector": "[data-knowledge-strategy-detail-trigger]"
+      }
+    },
+    {
+      "operation": "act",
+      "action": "fill",
+      "target": {
+        "selector": "div.fixed.inset-0 fieldset > section:first-of-type input.input"
+      },
+      "value": "培训test0819【评测临时名称】"
+    },
+    {
+      "operation": "act",
+      "action": "click",
+      "target": {
+        "selector": "div.fixed.inset-0 > div > div:last-child button.btn-primary"
+      }
+    },
+    {
+      "operation": "navigate",
+      "url": "/dashboard/knowledge"
+    },
+    {
+      "operation": "act",
+      "action": "click",
+      "target": {
+        "role": "tab",
+        "name": "策略库",
+        "exact": true
+      }
+    },
+    {
+      "operation": "act",
+      "action": "fill",
+      "target": {
+        "placeholder": "搜索策略名或章节目录名"
+      },
+      "value": "培训test0819【评测临时名称】"
+    },
+    {
+      "operation": "assert",
+      "type": "text",
+      "target": {
+        "selector": "[data-knowledge-strategy-detail-trigger]"
+      },
+      "expected": "培训test0819【评测临时名称】"
+    },
+    {
+      "operation": "act",
+      "action": "click",
+      "target": {
+        "selector": "[data-knowledge-strategy-detail-trigger]"
+      }
+    },
+    {
+      "operation": "act",
+      "action": "fill",
+      "target": {
+        "selector": "div.fixed.inset-0 fieldset > section:first-of-type input.input"
+      },
+      "value": "培训test0819"
+    },
+    {
+      "operation": "act",
+      "action": "click",
+      "target": {
+        "selector": "div.fixed.inset-0 > div > div:last-child button.btn-primary"
+      }
+    },
+    {
+      "operation": "navigate",
+      "url": "/dashboard/knowledge"
+    },
+    {
+      "operation": "act",
+      "action": "click",
+      "target": {
+        "role": "tab",
+        "name": "策略库",
+        "exact": true
+      }
+    },
+    {
+      "operation": "act",
+      "action": "fill",
+      "target": {
+        "placeholder": "搜索策略名或章节目录名"
+      },
+      "value": "培训test0819"
+    },
+    {
+      "operation": "assert",
+      "type": "text",
+      "target": {
+        "selector": "[data-knowledge-strategy-detail-trigger]"
+      },
+      "expected": "培训test0819"
+    }
+  ],
+  "assertions": [],
+  "policy": {
+    "gate": false,
+    "nightly": false,
+    "retries": 0
+  }
+}

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { createBrowserService } from "../server.mjs";
-import { EvidenceStore } from "../lib/evidence-store.mjs";
+import { EvidenceStore, sanitizeUrl } from "../lib/evidence-store.mjs";
 import { BrowserRunnerError } from "../lib/operation-budget.mjs";
 
 class FakePage {
@@ -116,6 +116,9 @@ test("deadline and cancel stop an operation without a blind same-tab retry", asy
     const timedOut = await item.service.manager.navigate(session.sessionId, { url: "http://example.test/slow", delayMs: 100, deadlineMs: 20 });
     assert.equal(timedOut.errorCode, "DEADLINE_EXCEEDED");
     assert.equal(item.runner.cancelCount, 1);
+    assert.equal(item.service.manager.get(session.sessionId).state, "stale");
+
+    await item.service.manager.reconnect(session.sessionId);
 
     const running = item.service.manager.navigate(session.sessionId, { url: "http://example.test/cancel", delayMs: 500, deadlineMs: 1000 });
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -124,6 +127,7 @@ test("deadline and cancel stop an operation without a blind same-tab retry", asy
     assert.equal(cancel.status, "cancelling");
     const cancelled = await running;
     assert.equal(cancelled.errorCode, "CANCELLED");
+    assert.equal(item.service.manager.get(session.sessionId).state, "stale");
   } finally { await closeService(item); }
 });
 
@@ -160,7 +164,7 @@ test("reconnect replaces a stale tab explicitly and starts a fresh trace", async
 test("control plane persists a case with assertions and records runs", async () => {
   const item = await serviceWithFake();
   try {
-    const created = await item.service.controlPlane.create({ title: "登录页 smoke", project: "sample-app", startUrl: "http://example.test/login", steps: [{ action: "click", target: { role: "button", name: "登录" } }], assertions: [{ type: "visible", target: { testId: "home" } }], policy: { gate: true } });
+    const created = await item.service.controlPlane.create({ title: "登录页 smoke", project: "sample-app", approvedScope: "允许此测试用例修改本地测试数据", startUrl: "http://example.test/login", steps: [{ action: "click", target: { role: "button", name: "登录" } }], assertions: [{ type: "visible", target: { testId: "home" } }], policy: { gate: true } });
     assert.equal(created.version, 1);
     const result = await item.service.controlPlane.run(created.id, item.service.manager, { closeAfterRun: false });
     assert.equal(result.status, "passed");
@@ -176,6 +180,7 @@ test("top-level steps interleave act, relative navigate, and assert while preser
   try {
     const created = await item.service.controlPlane.create({
       title: "save refresh assert restore",
+      approvedScope: "允许此用例修改和恢复本地测试记录",
       environment: { baseUrl: "http://example.test/app/" },
       steps: [
         { operation: "act", action: "click", target: { role: "button", name: "Save" } },
@@ -201,6 +206,7 @@ test("legacy top-level steps without operation remain act steps", async () => {
   try {
     const created = await item.service.controlPlane.create({
       title: "legacy action sequence",
+      approvedScope: "允许点击本地测试页面",
       steps: [{ action: "click", target: { role: "button", name: "Legacy save" } }],
     });
     assert.equal(created.steps[0].operation, "act");
@@ -216,6 +222,7 @@ test("top-level fill keeps an explicit non-secret value", async () => {
   try {
     const created = await item.service.controlPlane.create({
       title: "ordinary editable field",
+      approvedScope: "允许修改本地测试显示名",
       steps: [{ operation: "act", action: "fill", target: { label: "Display name" }, value: "temporary test name" }],
     });
     const result = await item.service.controlPlane.run(created.id, item.service.manager, { closeAfterRun: false });
@@ -231,6 +238,7 @@ test("a failed interleaved step records failure evidence and short-circuits late
   try {
     const created = await item.service.controlPlane.create({
       title: "short circuit",
+      approvedScope: "允许执行本地失败测试夹具",
       environment: { baseUrl: "http://example.test/" },
       steps: [
         { operation: "act", action: "click", target: { text: "Before" } },
@@ -266,6 +274,7 @@ test("generic setup fixture resolves baseUrl plus env and secretRef values witho
     const created = await item.service.controlPlane.create({
       title: "generic authenticated setup",
       project: "sample-app",
+      approvedScope: "允许使用指定测试账号登录并执行本地回归用例",
       environment: { name: "local", baseUrl: "http://example.test/" },
       setup: {
         steps: [
@@ -297,6 +306,7 @@ test("generic setup fixture resolves baseUrl plus env and secretRef values witho
 
     const persisted = await readFile(path.join(item.root, "test-cases.json"), "utf8");
     const evidence = await readFilesRecursively(path.join(item.root, "evidence"));
+    const evidenceFiles = await readdir(path.join(item.root, "evidence"), { recursive: true });
     const publicRun = JSON.stringify(result);
     for (const sensitive of [username, password]) {
       assert.doesNotMatch(persisted, new RegExp(sensitive));
@@ -305,6 +315,7 @@ test("generic setup fixture resolves baseUrl plus env and secretRef values witho
     }
     assert.match(persisted, /FIXTURE_USERNAME/);
     assert.match(persisted, /qa\/login\/password/);
+    assert.equal(evidenceFiles.some((file) => String(file).endsWith(".png")), false);
     await item.service.manager.close(result.sessionId);
   } finally { await closeService(item); }
 });
@@ -348,9 +359,24 @@ test("operation budget rejects an expired deadline before calling the runner", a
   } finally { await closeService(item); }
 });
 
+test("public callers cannot disable mandatory trace", async () => {
+  const item = await serviceWithFake();
+  try {
+    await assert.rejects(
+      item.service.manager.createSession({ trace: false }),
+      (error) => error?.code === "TRACE_POLICY_FORBIDDEN",
+    );
+  } finally { await closeService(item); }
+});
+
 test("invalid target is a 422 structured runner error", async () => {
   const error = new BrowserRunnerError("INVALID_TARGET", "bad", { statusCode: 422, phase: "locate" });
   assert.deepEqual(error.toJSON(), { code: "INVALID_TARGET", message: "bad", phase: "locate", retryable: false, details: null });
+});
+
+test("URL evidence strips query data without corrupting about:blank", () => {
+  assert.equal(sanitizeUrl("about:blank"), "about:blank");
+  assert.equal(sanitizeUrl("https://example.test/path?token=secret#fragment"), "https://example.test/path");
 });
 
 test("core starts without an application-specific adapter", async () => {

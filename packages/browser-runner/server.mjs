@@ -112,8 +112,8 @@ export function createBrowserService(options = {}) {
             "GET /api/sessions/:id": "读取 session/tab 状态。",
             "GET /api/sessions/:id/health": "读取 session 健康状态。",
             "POST /api/sessions/:id/navigate": "导航到 URL，支持 deadlineMs/totalBudgetMs。",
-            "POST /api/sessions/:id/inspect": "读取脱敏 DOM 摘要，可按需 screenshot。",
-            "POST /api/sessions/:id/act": "执行 click/fill/select/scroll 等动作。",
+            "POST /api/sessions/:id/inspect": "读取有界的脱敏 DOM 摘要并保存截图证据。",
+            "POST /api/sessions/:id/act": "执行 click/fill/upload/scroll 等动作；写动作必须携带 approvedScope，弹框必须声明 dialogAction。",
             "POST /api/sessions/:id/assert": "执行 URL/title/visible/text/value/count 断言。",
             "POST /api/sessions/:id/cancel": "取消当前 operation，不在同一 tab 盲重试。",
             "POST /api/sessions/:id/close": "关闭 tab/context。",
@@ -135,6 +135,13 @@ export function createBrowserService(options = {}) {
             operations: ["navigate", "act", "assert"],
             legacyWithoutOperation: "act",
             failureBehavior: "short-circuit",
+            mutationAuthorization: "approvedScope required",
+            nativeDialogPolicy: "explicit dialogAction=accept|dismiss; otherwise auto-dismiss and DIALOG_REQUIRED",
+          },
+          evidencePolicy: {
+            screenshots: "mandatory per operation; before+after for mutations",
+            trace: "mandatory except runtime-value setup where screenshots/trace are suppressed",
+            visibleTextLimit: 8000,
           },
           integrations,
         });
@@ -199,7 +206,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToP
   const port = Number(process.env.PORT || 4321);
   const host = process.env.HOST || "127.0.0.1";
   await mkdir(path.join(HERE, "data"), { recursive: true, mode: 0o700 });
-  const service = createBrowserService();
+  const service = createBrowserService({ headless: !/^(0|false|no)$/i.test(String(process.env.AGENT_EVAL_HEADLESS || "true")) });
   service.server.listen(port, host, () => console.log(`agent-eval browser runner listening on http://${host}:${port}`));
   const shutdown = async () => { await service.manager.dispose(); await service.runner.close().catch(() => {}); service.server.close(() => process.exit(0)); };
   process.once("SIGINT", shutdown);
