@@ -54,15 +54,17 @@ function abortError(reason, context) {
 export function createOperationBudget(options = {}) {
   const now = Date.now();
   const deadlineMs = boundedDeadline(options.deadlineMs, DEFAULT_DEADLINE_MS);
-  const requestedDeadlineAt = Number.isFinite(Number(options.deadlineAt))
+  const requestedDeadlineAt = options.deadlineAt != null && Number.isFinite(Number(options.deadlineAt))
     ? Number(options.deadlineAt)
     : now + deadlineMs;
-  const totalDeadlineAt = Number.isFinite(Number(options.totalDeadlineAt))
+  const totalDeadlineAt = options.totalDeadlineAt != null && Number.isFinite(Number(options.totalDeadlineAt))
     ? Number(options.totalDeadlineAt)
-    : Number.isFinite(Number(options.totalBudgetMs))
+    : options.totalBudgetMs != null && Number.isFinite(Number(options.totalBudgetMs))
       ? now + boundedDeadline(options.totalBudgetMs, deadlineMs)
       : requestedDeadlineAt;
-  const deadlineAt = Math.min(requestedDeadlineAt, totalDeadlineAt);
+  const deadlineAt = Math.min(now + deadlineMs, requestedDeadlineAt, totalDeadlineAt,
+    options.totalBudgetMs != null && Number.isFinite(Number(options.totalBudgetMs))
+      ? now + boundedDeadline(options.totalBudgetMs, deadlineMs) : Infinity);
   const controller = new AbortController();
   const externalSignal = options.signal;
   let cancelReason = null;

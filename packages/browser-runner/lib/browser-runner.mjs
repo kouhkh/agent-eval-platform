@@ -372,10 +372,15 @@ export class PlaywrightRunner {
     }
   }
 
-  async runWithDialogPolicy(page, input, task) {
+  async runWithDialogPolicy(page, input, task, budget, after = async () => {}) {
     const requestedAction = dialogAction(input);
+    if (input.dialogExpected != null && typeof input.dialogExpected !== "boolean") {
+      throw new BrowserRunnerError("INVALID_DIALOG_EXPECTATION", "dialogExpected 必须为 boolean。", { statusCode: 422, phase: "dialog" });
+    }
     let observed = null;
     let handling = Promise.resolve();
+    let resolveObserved;
+    const observedPromise = new Promise((resolve) => { resolveObserved = resolve; });
     const handler = (dialog) => {
       if (observed) {
         void dialog.dismiss().catch(() => {});
@@ -392,10 +397,16 @@ export class PlaywrightRunner {
       handling = handledAs === "accept"
         ? dialog.accept(input.dialogPromptText == null ? undefined : String(input.dialogPromptText))
         : dialog.dismiss();
+      handling.catch(() => {});
+      resolveObserved();
     };
     page.on("dialog", handler);
     try {
       await task();
+      if (input.dialogExpected === true) {
+        await budget.run(() => observedPromise, { onCancel: () => this.cancelPage(page) });
+      }
+      await after();
       await handling;
       if (observed?.automaticallyDismissed) {
         throw new BrowserRunnerError(
@@ -405,6 +416,9 @@ export class PlaywrightRunner {
         );
       }
       return observed;
+    } catch (error) {
+      if (observed) error.details = { ...(error.details || {}), dialog: observed };
+      throw error;
     } finally {
       page.off("dialog", handler);
     }
@@ -483,8 +497,10 @@ export class PlaywrightRunner {
         }
         else throw new BrowserRunnerError("UNSUPPORTED_ACTION", `不支持的浏览器动作：${action}。`, { statusCode: 422, phase: "act" });
       };
-      dialog = mutating ? await this.runWithDialogPolicy(page, input, perform) : (await perform(), null);
-      const waited = await waitForCondition(page, input.waitFor, budget);
+      let waited = null;
+      const after = async () => { waited = await waitForCondition(page, input.waitFor, budget); };
+      if (mutating) dialog = await this.runWithDialogPolicy(page, input, perform, budget, after);
+      else { await perform(); await after(); }
       screenshots.push(await this.captureAnnotatedScreenshot(page, { ...input, action }, "after", budget));
       return {
         action,
@@ -534,8 +550,9 @@ export class PlaywrightRunner {
         else if (type === "text") {
           const expectedText = String(expected ?? "");
           await waitForCondition(page, { type: "text", target: input.target, expected: expectedText }, budget);
-          actual = trimText(await budget.run(() => locator.textContent(), { onCancel: () => this.cancelPage(page) }), 1000);
-          pass = actual.includes(expectedText);
+          const fullText = String(await budget.run(() => locator.textContent({ timeout: safeTimeout(budget) }), { onCancel: () => this.cancelPage(page) }) || "");
+          pass = fullText.includes(expectedText);
+          actual = trimText(fullText, 1000);
         }
         else if (type === "value") { actual = await budget.run(() => locator.inputValue(), { onCancel: () => this.cancelPage(page) }); pass = actual === String(expected ?? ""); }
         else if (type === "count") { actual = await budget.run(() => locator.count(), { onCancel: () => this.cancelPage(page) }); pass = actual === Number(expected); }

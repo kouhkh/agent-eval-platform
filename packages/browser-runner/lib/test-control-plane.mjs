@@ -112,7 +112,7 @@ export class TestControlPlane {
     const evidenceRefs = [];
     const totalBudgetMs = Number(input.totalBudgetMs);
     const totalDeadlineAt = Number.isFinite(totalBudgetMs) && totalBudgetMs > 0 ? startedAt + totalBudgetMs : undefined;
-    const operationInput = () => ({ deadlineMs: input.deadlineMs, deadlineAt: totalDeadlineAt, totalBudgetMs: input.totalBudgetMs });
+    const operationInput = () => ({ deadlineMs: input.deadlineMs, totalDeadlineAt });
     const approvedScope = String(input.approvedScope || testCase.approvedScope || "").trim().slice(0, 500);
     const setup = testCase.setup || { steps: [] };
     const hasRuntimeValues = hasRuntimeSetupValues(setup) || hasRuntimeOperationValues(testCase.steps);

@@ -175,6 +175,19 @@ test("control plane persists a case with assertions and records runs", async () 
   } finally { await closeService(item); }
 });
 
+test("control plane keeps both step limits and an anchored run deadline", async () => {
+  const item = await serviceWithFake();
+  try {
+    const created = await item.service.controlPlane.create({ title: "budget regression", steps: [{ operation: "navigate", url: "http://example.test/slow", delayMs: 100 }] });
+    const result = await item.service.controlPlane.run(created.id, item.service.manager, { deadlineMs: 20, totalBudgetMs: 300000 });
+    assert.equal(result.status, "failed");
+    assert.equal(result.operations[0].errorCode, "DEADLINE_EXCEEDED");
+    const second = await item.service.controlPlane.run(created.id, item.service.manager, { deadlineMs: 300000, totalBudgetMs: 20 });
+    assert.equal(second.status, "failed");
+    assert.equal(second.operations[0].errorCode, "DEADLINE_EXCEEDED");
+  } finally { await closeService(item); }
+});
+
 test("top-level steps interleave act, relative navigate, and assert while preserving ordered evidence", async () => {
   const item = await serviceWithFake();
   try {

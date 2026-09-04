@@ -8,6 +8,58 @@ import { PlaywrightRunner } from "../lib/browser-runner.mjs";
 import { EvidenceStore } from "../lib/evidence-store.mjs";
 import { SessionManager } from "../lib/session-manager.mjs";
 
+test("delayed dialogs, postcondition listener lifetime, and long text assertions", { timeout: 30000 }, async () => {
+  const item = await realManager();
+  try {
+    const created = await item.manager.createSession();
+    const session = item.manager.get(created.sessionId);
+    await session.page.setContent(`<button id="delayed" onclick="setTimeout(() => { document.querySelector('#state').textContent = confirm('Delayed fixture?') ? 'accepted' : 'dismissed'; }, 200)">Delayed</button><button id="noop">No dialog</button><p id="state">unset</p><main>${"prefix ".repeat(300)}MATCH_AT_END</main>`);
+    const longText = await item.manager.assert(created.sessionId, { type: "text", target: { selector: "main" }, expected: "MATCH_AT_END" });
+    assert.equal(longText.status, "succeeded");
+    assert.ok(longText.data.actual.length <= 1000);
+    for (const explicitExpectation of [false, true]) {
+      const result = await item.manager.act(created.sessionId, {
+        action: "click", target: { selector: "#delayed" }, approvedScope: "isolated regression fixture",
+        dialogAction: explicitExpectation ? "dismiss" : "accept", dialogExpected: explicitExpectation,
+        ...(explicitExpectation ? {} : { waitFor: { type: "text", target: { selector: "#state" }, expected: "accepted" } }),
+      });
+      assert.equal(result.status, "succeeded", JSON.stringify(result.error));
+      assert.equal(result.data.interaction.dialog.handledAs, explicitExpectation ? "dismiss" : "accept");
+      assert.equal(session.page.listenerCount("dialog"), 0);
+    }
+    const undeclared = await item.manager.act(created.sessionId, {
+      action: "click", target: { selector: "#delayed" }, approvedScope: "isolated regression fixture", dialogExpected: true,
+    });
+    assert.equal(undeclared.errorCode, "DIALOG_REQUIRED");
+    const trace = await item.manager.getTrace(created.sessionId);
+    assert.equal(trace.status, "succeeded");
+    assert.ok(trace.evidenceRefs.some((ref) => ref.endsWith("trace.zip")));
+    const missing = await item.manager.act(created.sessionId, {
+      action: "click", target: { selector: "#noop" }, approvedScope: "isolated regression fixture",
+      dialogAction: "accept", dialogExpected: true, deadlineMs: 700, totalDeadlineAt: Date.now() + 300000,
+    });
+    assert.equal(missing.errorCode, "DEADLINE_EXCEEDED");
+    assert.equal(item.manager.get(created.sessionId).state, "stale");
+    assert.equal(session.page.listenerCount("dialog"), 0);
+    const fresh = await item.manager.createSession();
+    const freshSession = item.manager.get(fresh.sessionId);
+    await freshSession.page.setContent('<button id="noop">No dialog</button>');
+    const pending = item.manager.act(fresh.sessionId, {
+      action: "click", target: { selector: "#noop" }, approvedScope: "isolated cancellation fixture",
+      dialogExpected: true, dialogAction: "accept", deadlineMs: 5000,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await item.manager.cancel(fresh.sessionId);
+    assert.equal((await pending).errorCode, "CANCELLED");
+    assert.equal(freshSession.page.listenerCount("dialog"), 0);
+  } finally {
+    await item.manager.dispose();
+    await item.runner.close();
+    if (process.env.KEEP_RUNNER_EVIDENCE === "1") console.log(`Regression evidence: ${item.root}`);
+    else await rm(item.root, { recursive: true, force: true });
+  }
+});
+
 async function realManager() {
   const root = await mkdtemp(path.join(tmpdir(), "agent-eval-browser-real-"));
   const runner = new PlaywrightRunner({ headless: true, profileRoot: path.join(root, "profiles") });

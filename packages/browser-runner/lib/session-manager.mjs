@@ -337,6 +337,7 @@ export class SessionManager {
       deadlineMs: input?.deadlineMs,
       totalBudgetMs: input?.totalBudgetMs,
       deadlineAt: input?.deadlineAt,
+      totalDeadlineAt: input?.totalDeadlineAt,
     });
     session.operation = { operationId, budget, kind, startedAt: Date.now() };
     session.state = "busy";
