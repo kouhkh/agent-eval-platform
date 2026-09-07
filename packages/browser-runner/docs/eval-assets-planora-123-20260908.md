@@ -5,12 +5,14 @@
 - `.migration/final-main-7a260008-123-20260908/api-db-audit/研发自测-代码API数据库只读矩阵.md` — 代码、API 与数据库只读矩阵。
 - `.migration/final-main-7a260008-123-20260908/browser/README.md` — 浏览器关键链、结果、清理动作及 evidenceRefs 索引。
 - `.migration/final-main-7a260008-123-20260908/browser/session-f33c0658-engineering-name-blocked/3bb30de2-b4cc-417a-868a-ddc38114908a/` — 用户提供的现场证据只有 `operation.json` 与 `error.json`，60 秒后返回 `DEADLINE_EXCEEDED`；无 screenshot/result/network。
+- `outputs/status-todo-20260907/章节激活卡顿调查.md` — 后续重放更正了产品卡顿推断：历史资产把 inspect `textContent` 当成 `getByRole` accessible name，错误 locator 在 postcondition 等待中未 resolved。
 
 ## 调用链 / 约束
 
 - 测试资产使用通用 `setup → navigate → inspect → act → assert → cleanup/restore` 表达，不新增 Planora adapter。
 - 写操作保留 `approvedScope`；原生对话框保留 `dialogAction`；清理失败不得通过手工改库伪造成功。
 - `packages/browser-runner/lib/browser-runner.mjs:captureAnnotatedScreenshot` — 像素证据改为独立有界阶段；操作前截图超时时禁止写操作。
+- `packages/browser-runner/lib/browser-runner.mjs:pageSummary/locatorFor` — inspect 显式区分文本与可访问语义，返回可原样往返的 `recommendedTarget`；act 记录匹配数、locator 语义和最后 Playwright 错误。
 
 ## 候选显式评测项
 
@@ -33,7 +35,7 @@
 
 - 以上是研发自测资产，不是测试人员验收。
 - 本仓只记录来源及通用契约，不复制带登录态的 trace 或 Planora 业务数据。
-- 该现场证明整个 act 在写操作前结束；仅凭现有两份 JSON，无法独立证明 60 秒全部耗在 Playwright `page.screenshot`内部。
+- 该旧现场只能证明整个 act 没有完成；后续证据已证实存在 inspect→act locator 语义不一致，不能将超时归因为 Planora 主线程卡顿。
 
 ## 未知项
 

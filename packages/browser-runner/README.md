@@ -60,6 +60,7 @@ POST /api/test-cases/:id/runs
 
 操作成功和失败都返回包含 `operationId`、`sessionId`、`tabId`、`status`、`elapsedMs`、`phase`、`errorCode` 和 `evidenceRefs` 的统一 envelope。
 `act` 还记录 `before-evidence`、`perform`、`dialog`、`postcondition` 和 `after-evidence` 阶段；超时错误的 `details.operationPhase` 指明最后阶段及已完成阶段耗时，不再只返回笼统的整体 deadline。
+`inspect.elements` 把 `textContent`、`ariaLabel`、`nameAttribute` 分开，不把展示文本冒充成 accessible name。`accessibleNameStatus: "not-computed"` 表示本轮未计算可访问名；调用方应原样使用 `recommendedTarget.target`。优先级为 testId/uiKey/id/显式 aria-label；都缺失时返回标记为 `ephemeral` 的当前 DOM CSS 路径，不应直接固化为长期资产。
 
 ## CLI / MCP
 

@@ -89,6 +89,7 @@ function locatorFor(page, target) {
   }
   if (!target || typeof target !== "object") throw new BrowserRunnerError("INVALID_TARGET", "操作缺少有效 UI 元素定位信息。", { statusCode: 422, phase: "locate" });
   if (target.testId) return page.getByTestId(String(target.testId));
+  if (target.uiKey) return page.locator(`[data-ui-key=${JSON.stringify(String(target.uiKey))}]`);
   if (target.role) {
     const options = {};
     if (target.name != null) options.name = String(target.name);
@@ -99,7 +100,24 @@ function locatorFor(page, target) {
   if (target.placeholder) return page.getByPlaceholder(String(target.placeholder), { exact: target.exact !== false });
   if (target.text) return page.getByText(String(target.text), { exact: target.exact !== false });
   if (target.selector) return page.locator(String(target.selector));
-  throw new BrowserRunnerError("INVALID_TARGET", "UI 元素没有 selector、role、label、text 或 testId。", { statusCode: 422, phase: "locate" });
+  throw new BrowserRunnerError("INVALID_TARGET", "UI 元素没有 selector、role、label、text、uiKey 或 testId。", { statusCode: 422, phase: "locate" });
+}
+
+function locatorSemantics(target) {
+  if (typeof target === "string") return /^(css=|xpath=|[.#\[])/i.test(target) ? "selector" : "visible-text";
+  if (target?.testId) return "test-id";
+  if (target?.uiKey) return "ui-key";
+  if (target?.role && target?.name != null) return "role-accessible-name";
+  if (target?.role) return "role";
+  if (target?.label) return "label-or-aria-label";
+  if (target?.placeholder) return "placeholder";
+  if (target?.text) return "visible-text";
+  return "selector";
+}
+
+async function locatorDiagnostic(locator, target) {
+  try { return { semantics: locatorSemantics(target), matchCount: await locator.count(), lastError: null }; }
+  catch (error) { return { semantics: locatorSemantics(target), matchCount: null, lastError: trimText(error instanceof Error ? error.message : String(error), 2000) }; }
 }
 
 function normalizeUrlPattern(expected) {
@@ -295,7 +313,7 @@ export class PlaywrightRunner {
         .replace(/\n{3,}/g, "\n\n")
         .trim();
       const textLimit = 8000;
-      const nodes = [...document.querySelectorAll("a,button,input,select,textarea,[role],[data-testid]")];
+      const nodes = [...document.querySelectorAll("a,button,input,select,textarea,[role],[data-testid],[data-ui-key]")];
       return {
         readyState: document.readyState,
         visibleText: visibleText.slice(0, textLimit),
@@ -304,15 +322,46 @@ export class PlaywrightRunner {
         elements: nodes.slice(0, max).map((element, index) => {
           const rect = element.getBoundingClientRect();
           const type = element.getAttribute("type") || element.tagName.toLowerCase();
-          const label = element.getAttribute("aria-label") || element.getAttribute("name") || element.textContent || "";
+          const ariaLabel = element.getAttribute("aria-label");
+          const nameAttribute = element.getAttribute("name");
+          const uiKey = element.getAttribute("data-ui-key");
+          const textContent = String(element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 180);
+          const label = ariaLabel || nameAttribute || textContent;
           const isSensitive = /password|token|secret|authorization/i.test(`${type} ${element.getAttribute("name") || ""} ${element.getAttribute("id") || ""}`);
+          const escapedId = element.id ? `#${CSS.escape(element.id)}` : null;
+          const cssPath = () => {
+            const parts = [];
+            let node = element;
+            while (node && node.nodeType === 1 && node !== document.documentElement) {
+              const tag = node.tagName.toLowerCase();
+              const siblings = [...node.parentElement.children].filter((item) => item.tagName === node.tagName);
+              parts.unshift(`${tag}:nth-of-type(${siblings.indexOf(node) + 1})`);
+              node = node.parentElement;
+            }
+            return `html > ${parts.join(" > ")}`;
+          };
+          const recommendedTarget = element.getAttribute("data-testid")
+            ? { target: { testId: element.getAttribute("data-testid") }, stability: "stable", semantics: "test-id" }
+            : uiKey ? { target: { uiKey }, stability: "stable", semantics: "ui-key" }
+              : escapedId ? { target: { selector: escapedId }, stability: "stable", semantics: "id-selector" }
+                : ariaLabel ? { target: { label: ariaLabel, exact: true }, stability: "explicit", semantics: "aria-label" }
+                  : { target: { selector: cssPath() }, stability: "ephemeral", semantics: "css-path" };
           return {
             index,
             tag: element.tagName.toLowerCase(),
             role: element.getAttribute("role") || null,
             id: element.id || null,
             testId: element.getAttribute("data-testid") || null,
+            uiKey,
             label: isSensitive ? "<redacted:sensitive>" : String(label).replace(/\s+/g, " ").trim().slice(0, 180),
+            labelSource: ariaLabel ? "aria-label" : nameAttribute ? "name-attribute" : "textContent",
+            labelIsLocator: false,
+            textContent: isSensitive ? "<redacted:sensitive>" : textContent,
+            ariaLabel: isSensitive ? "<redacted:sensitive>" : ariaLabel,
+            nameAttribute: isSensitive ? "<redacted:sensitive>" : nameAttribute,
+            accessibleName: null,
+            accessibleNameStatus: "not-computed",
+            recommendedTarget,
             inputType: type,
             visible: rect.width > 0 && rect.height > 0,
             disabled: Boolean(element.disabled || element.getAttribute("aria-disabled") === "true"),
@@ -350,7 +399,8 @@ export class PlaywrightRunner {
         // modal close, view switch). Evidence annotation is best-effort and
         // must not consume the operation's entire deadline while waiting for
         // that old element to reappear.
-        const annotationTimeoutMs = Math.min(750, evidenceTimeout(input, budget, evidenceBudget.deadlineAt).timeoutMs);
+        const evidenceRemainingMs = evidenceTimeout(input, budget, evidenceBudget.deadlineAt).timeoutMs;
+        const annotationTimeoutMs = Math.min(750, Math.max(1, Math.floor(evidenceRemainingMs / 4)));
         await locator.scrollIntoViewIfNeeded({ timeout: annotationTimeoutMs });
         targetInfo = await locator.evaluate((element, { attribute }) => {
           const rect = element.getBoundingClientRect();
@@ -493,6 +543,7 @@ export class PlaywrightRunner {
     budget.setPhase("perform");
     let dialog = null;
     let interaction = null;
+    let locatorDetails = null;
     try {
       const perform = async () => {
         if (action === "scroll") {
@@ -507,18 +558,27 @@ export class PlaywrightRunner {
           return;
         }
         const locator = locatorFor(page, target);
-        if (action === "click") await budget.run(() => locator.click({ timeout: safeTimeout(budget) }), { onCancel: () => this.cancelPage(page) });
-        else if (action === "dblclick") await budget.run(() => locator.dblclick({ timeout: safeTimeout(budget) }), { onCancel: () => this.cancelPage(page) });
+        budget.setPhase("locate");
+        locatorDetails = await locatorDiagnostic(locator, target);
+        budget.setPhase("perform");
+        const remainingForAction = safeTimeout(budget);
+        const failureEvidenceReserveMs = Math.min(
+          Math.max(250, Math.floor(remainingForAction / 4)),
+          evidenceTimeout(input, budget).timeoutMs + 500,
+        );
+        const actionTimeoutMs = Math.max(1, remainingForAction - failureEvidenceReserveMs);
+        if (action === "click") await budget.run(() => locator.click({ timeout: actionTimeoutMs }), { onCancel: () => this.cancelPage(page) });
+        else if (action === "dblclick") await budget.run(() => locator.dblclick({ timeout: actionTimeoutMs }), { onCancel: () => this.cancelPage(page) });
         else if (action === "fill") {
           const value = String(input.value ?? "");
-          await budget.run(() => locator.fill(value, { timeout: safeTimeout(budget) }), { onCancel: () => this.cancelPage(page) });
+          await budget.run(() => locator.fill(value, { timeout: actionTimeoutMs }), { onCancel: () => this.cancelPage(page) });
           interaction = { valueLength: value.length };
         }
-        else if (action === "select") { const selected = await budget.run(() => locator.selectOption(input.value, { timeout: safeTimeout(budget) }), { onCancel: () => this.cancelPage(page) }); interaction = { selected }; }
-        else if (action === "check") await budget.run(() => locator.check({ timeout: safeTimeout(budget) }), { onCancel: () => this.cancelPage(page) });
-        else if (action === "uncheck") await budget.run(() => locator.uncheck({ timeout: safeTimeout(budget) }), { onCancel: () => this.cancelPage(page) });
-        else if (action === "hover") await budget.run(() => locator.hover({ timeout: safeTimeout(budget) }), { onCancel: () => this.cancelPage(page) });
-        else if (action === "press") await budget.run(() => locator.press(String(input.value || "Enter"), { timeout: safeTimeout(budget) }), { onCancel: () => this.cancelPage(page) });
+        else if (action === "select") { const selected = await budget.run(() => locator.selectOption(input.value, { timeout: actionTimeoutMs }), { onCancel: () => this.cancelPage(page) }); interaction = { selected }; }
+        else if (action === "check") await budget.run(() => locator.check({ timeout: actionTimeoutMs }), { onCancel: () => this.cancelPage(page) });
+        else if (action === "uncheck") await budget.run(() => locator.uncheck({ timeout: actionTimeoutMs }), { onCancel: () => this.cancelPage(page) });
+        else if (action === "hover") await budget.run(() => locator.hover({ timeout: actionTimeoutMs }), { onCancel: () => this.cancelPage(page) });
+        else if (action === "press") await budget.run(() => locator.press(String(input.value || "Enter"), { timeout: actionTimeoutMs }), { onCancel: () => this.cancelPage(page) });
         else if (action === "upload") {
           const requestedFiles = (Array.isArray(input.files) ? input.files : [input.file || input.value]).filter(Boolean).map(String);
           if (!requestedFiles.length) throw new BrowserRunnerError("UPLOAD_FILE_REQUIRED", "upload 必须提供 file 或 files。", { statusCode: 422, phase: "act" });
@@ -527,7 +587,7 @@ export class PlaywrightRunner {
             if (!existsSync(file) || !statSync(file).isFile()) throw new BrowserRunnerError("UPLOAD_FILE_NOT_FOUND", `上传文件不存在：${file}`, { statusCode: 422, phase: "act" });
           }
           const files = requestedFiles.map((file) => path.resolve(file));
-          await budget.run(() => locator.setInputFiles(files, { timeout: safeTimeout(budget) }), { onCancel: () => this.cancelPage(page) });
+          await budget.run(() => locator.setInputFiles(files, { timeout: actionTimeoutMs }), { onCancel: () => this.cancelPage(page) });
           interaction = { files: files.map((file) => ({ name: path.basename(file), size: statSync(file).size })) };
         }
         else throw new BrowserRunnerError("UNSUPPORTED_ACTION", `不支持的浏览器动作：${action}。`, { statusCode: 422, phase: "act" });
@@ -544,7 +604,7 @@ export class PlaywrightRunner {
         url: sanitizeUrl(page.url()),
         waitFor: waited,
         approvedScope: scope,
-        interaction: { ...(interaction || {}), dialog },
+        interaction: { ...(interaction || {}), dialog, locator: locatorDetails },
         screenshots,
         phaseTimings: budget.phaseSnapshot(),
         network: this.networkSince(page, networkCursor).events,
@@ -555,7 +615,7 @@ export class PlaywrightRunner {
         action,
         target: target || null,
         approvedScope: scope,
-        interaction: { ...(interaction || {}), dialog: error?.details?.dialog || dialog },
+        interaction: { ...(interaction || {}), dialog: error?.details?.dialog || dialog, locator: { ...(locatorDetails || { semantics: locatorSemantics(target), matchCount: null }), lastError: trimText(error instanceof Error ? error.message : String(error), 2000) } },
         screenshots,
         phaseTimings: budget.phaseSnapshot(),
         network: this.networkSince(page, networkCursor).events,

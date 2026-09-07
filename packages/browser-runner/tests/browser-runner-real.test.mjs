@@ -111,6 +111,62 @@ test("a bounded before-screenshot failure prevents mutation and keeps the sessio
   }
 });
 
+test("inspect targets round-trip for multi-span controls without treating text as accessible name", { timeout: 30_000 }, async () => {
+  const item = await realManager();
+  try {
+    const created = await item.manager.createSession();
+    const session = item.manager.get(created.sessionId);
+    await session.page.setContent('<button><span>2.1</span><span>工程名称</span></button><button aria-label="Explicit action"><span>ignored text</span></button>');
+    const inspected = await item.manager.inspect(created.sessionId, { deadlineMs: 5_000 });
+    const multiSpan = inspected.data.elements.find((element) => element.textContent === "2.1工程名称");
+    assert.equal(multiSpan.labelSource, "textContent");
+    assert.equal(multiSpan.labelIsLocator, false);
+    assert.equal(multiSpan.accessibleName, null);
+    assert.equal(multiSpan.accessibleNameStatus, "not-computed");
+    assert.equal(multiSpan.recommendedTarget.stability, "ephemeral");
+    const clicked = await item.manager.act(created.sessionId, {
+      action: "click", target: multiSpan.recommendedTarget.target, approvedScope: "isolated multi-span locator fixture",
+    });
+    assert.equal(clicked.status, "succeeded");
+    assert.equal(clicked.data.interaction.locator.matchCount, 1);
+    assert.equal(clicked.data.interaction.locator.semantics, "selector");
+    const explicit = inspected.data.elements.find((element) => element.ariaLabel === "Explicit action");
+    assert.deepEqual(explicit.recommendedTarget, {
+      target: { label: "Explicit action", exact: true }, stability: "explicit", semantics: "aria-label",
+    });
+  } finally {
+    await item.manager.dispose();
+    await item.runner.close();
+    await rm(item.root, { recursive: true, force: true });
+  }
+});
+
+test("locator timeout preserves match count, retry reason, and before evidence", { timeout: 30_000 }, async () => {
+  const item = await realManager();
+  try {
+    const created = await item.manager.createSession();
+    await item.manager.get(created.sessionId).page.setContent('<button aria-label="2.1 工程名称"><span>2.1</span><span>工程名称</span></button>');
+    const result = await item.manager.act(created.sessionId, {
+      action: "click", target: { role: "button", name: "2.1工程名称", exact: true },
+      approvedScope: "isolated locator diagnostic fixture", deadlineMs: 3_000, evidenceTimeoutMs: 200,
+    });
+    assert.equal(result.errorCode, "BROWSER_OPERATION_FAILED");
+    assert.equal(item.manager.get(created.sessionId).state, "ready");
+    assert.ok(result.evidenceRefs.some((ref) => ref.endsWith("result.json")));
+    const resultRef = result.evidenceRefs.find((ref) => ref.endsWith("result.json"));
+    const resultPath = path.join(item.root, "evidence", ...resultRef.replace("evidence://", "").split("/"));
+    const saved = JSON.parse(await readFile(resultPath, "utf8"));
+    assert.equal(saved.interaction.locator.semantics, "role-accessible-name");
+    assert.equal(saved.interaction.locator.matchCount, 0);
+    assert.match(saved.interaction.locator.lastError, /getByRole|waiting|Timeout/i);
+    assert.equal(saved.screenshots[0].phase, "before");
+  } finally {
+    await item.manager.dispose();
+    await item.runner.close();
+    await rm(item.root, { recursive: true, force: true });
+  }
+});
+
 test("real Playwright runner enforces approval, dialog intent, bounded inspection, uploads, and evidence", { timeout: 30_000 }, async () => {
   const item = await realManager();
   try {
