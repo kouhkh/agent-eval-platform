@@ -68,12 +68,34 @@ export function createOperationBudget(options = {}) {
   const controller = new AbortController();
   const externalSignal = options.signal;
   const operations = new Set();
+  const startedAt = now;
+  let currentPhase = "operation";
+  let phaseStartedAt = now;
+  const completedPhases = [];
   let cancelReason = null;
+
+  const phaseSnapshot = () => ({
+    current: currentPhase,
+    elapsedMs: Date.now() - startedAt,
+    phases: [...completedPhases, { phase: currentPhase, elapsedMs: Date.now() - phaseStartedAt }],
+  });
+  const setPhase = (phase) => {
+    const next = String(phase || "operation");
+    if (next === currentPhase) return phaseSnapshot();
+    completedPhases.push({ phase: currentPhase, elapsedMs: Date.now() - phaseStartedAt });
+    currentPhase = next;
+    phaseStartedAt = Date.now();
+    return phaseSnapshot();
+  };
+  const withPhaseDetails = (error) => {
+    if (error && typeof error === "object") error.details = { ...(error.details || {}), operationPhase: phaseSnapshot() };
+    return error;
+  };
 
   const remainingMs = () => Math.max(0, deadlineAt - Date.now());
   const throwIfExpired = () => {
-    if (controller.signal.aborted) throw abortError(cancelReason || "cancel", options);
-    if (remainingMs() <= 0) throw abortError("deadline", options);
+    if (controller.signal.aborted) throw withPhaseDetails(abortError(cancelReason || "cancel", options));
+    if (remainingMs() <= 0) throw withPhaseDetails(abortError("deadline", options));
   };
   const cancel = (reason = "cancel") => {
     if (cancelReason) return;
@@ -100,7 +122,7 @@ export function createOperationBudget(options = {}) {
     const cancellation = new Promise((_, reject) => {
       abortListener = () => {
         Promise.resolve(optionsForRun.onCancel?.(cancelReason || "cancel")).catch(() => {});
-        reject(abortError(cancelReason || "cancel", options));
+        reject(withPhaseDetails(abortError(cancelReason || "cancel", options)));
       };
       if (controller.signal.aborted) abortListener();
       else controller.signal.addEventListener("abort", abortListener, { once: true });
@@ -137,6 +159,8 @@ export function createOperationBudget(options = {}) {
     cancel,
     throwIfExpired,
     drain,
+    phaseSnapshot,
+    setPhase,
     run,
   };
 }

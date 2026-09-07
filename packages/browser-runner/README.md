@@ -59,6 +59,7 @@ POST /api/test-cases/:id/runs
 ```
 
 操作成功和失败都返回包含 `operationId`、`sessionId`、`tabId`、`status`、`elapsedMs`、`phase`、`errorCode` 和 `evidenceRefs` 的统一 envelope。
+`act` 还记录 `before-evidence`、`perform`、`postcondition` 和 `after-evidence` 阶段；超时错误的 `details.operationPhase` 指明最后阶段及已完成阶段耗时，不再只返回笼统的整体 deadline。
 
 ## CLI / MCP
 

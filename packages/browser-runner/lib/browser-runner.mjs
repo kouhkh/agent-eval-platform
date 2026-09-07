@@ -487,7 +487,9 @@ export class PlaywrightRunner {
     const scope = mutating ? approvedScope(input) : null;
     const screenshots = [];
     const networkCursor = this.networkSince(page, input.networkCursor).cursor;
+    budget.setPhase("before-evidence");
     if (mutating) screenshots.push(await this.captureAnnotatedScreenshot(page, { ...input, action }, "before", budget));
+    budget.setPhase("perform");
     let dialog = null;
     let interaction = null;
     try {
@@ -530,9 +532,10 @@ export class PlaywrightRunner {
         else throw new BrowserRunnerError("UNSUPPORTED_ACTION", `不支持的浏览器动作：${action}。`, { statusCode: 422, phase: "act" });
       };
       let waited = null;
-      const after = async () => { waited = await waitForCondition(page, input.waitFor, budget); };
+      const after = async () => { budget.setPhase("postcondition"); waited = await waitForCondition(page, input.waitFor, budget); };
       if (mutating) dialog = await this.runWithDialogPolicy(page, input, perform, budget, after);
       else { await perform(); await after(); }
+      budget.setPhase("after-evidence");
       screenshots.push(await this.captureAnnotatedScreenshot(page, { ...input, action }, "after", budget));
       return {
         action,
@@ -542,6 +545,7 @@ export class PlaywrightRunner {
         approvedScope: scope,
         interaction: { ...(interaction || {}), dialog },
         screenshots,
+        phaseTimings: budget.phaseSnapshot(),
         network: this.networkSince(page, networkCursor).events,
       };
     } catch (error) {
@@ -552,6 +556,7 @@ export class PlaywrightRunner {
         approvedScope: scope,
         interaction: { ...(interaction || {}), dialog: error?.details?.dialog || dialog },
         screenshots,
+        phaseTimings: budget.phaseSnapshot(),
         network: this.networkSince(page, networkCursor).events,
       });
     }

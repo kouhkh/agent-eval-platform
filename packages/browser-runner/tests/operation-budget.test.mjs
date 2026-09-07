@@ -58,3 +58,15 @@ test("operation budget exposes a bounded drain after cancellation", async () => 
   assert.equal(await budget.drain(30), false);
   assert.ok(Date.now() - startedAt < 100);
 });
+
+test("deadline errors identify the last operation phase and prior phase timings", async () => {
+  const budget = createOperationBudget({ deadlineMs: 20 });
+  budget.setPhase("before-evidence");
+  budget.setPhase("perform");
+  await assert.rejects(
+    budget.run(() => new Promise(() => {})),
+    (error) => error.code === "DEADLINE_EXCEEDED"
+      && error.details.operationPhase.current === "perform"
+      && error.details.operationPhase.phases.some((item) => item.phase === "before-evidence"),
+  );
+});
