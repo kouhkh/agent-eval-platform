@@ -67,6 +67,7 @@ export function createOperationBudget(options = {}) {
       ? now + boundedDeadline(options.totalBudgetMs, deadlineMs) : Infinity);
   const controller = new AbortController();
   const externalSignal = options.signal;
+  const operations = new Set();
   let cancelReason = null;
 
   const remainingMs = () => Math.max(0, deadlineAt - Date.now());
@@ -88,6 +89,8 @@ export function createOperationBudget(options = {}) {
   async function run(task, optionsForRun = {}) {
     throwIfExpired();
     const operation = Promise.resolve().then(task);
+    operations.add(operation);
+    operation.then(() => operations.delete(operation), () => operations.delete(operation));
     // A timed-out Playwright promise may settle later. Attach a rejection
     // handler before racing so that cancellation never creates an unhandled
     // rejection in the host process.
@@ -113,6 +116,16 @@ export function createOperationBudget(options = {}) {
     }
   }
 
+  async function drain(timeoutMs = 250) {
+    const pending = [...operations];
+    if (!pending.length) return true;
+    let timer;
+    const settled = Promise.allSettled(pending).then(() => true);
+    const timedOut = new Promise((resolve) => { timer = setTimeout(() => resolve(false), Math.max(1, timeoutMs)); });
+    try { return await Promise.race([settled, timedOut]); }
+    finally { clearTimeout(timer); }
+  }
+
   return {
     operationId: options.operationId || null,
     sessionId: options.sessionId || null,
@@ -123,6 +136,7 @@ export function createOperationBudget(options = {}) {
     remainingMs,
     cancel,
     throwIfExpired,
+    drain,
     run,
   };
 }

@@ -11,7 +11,7 @@
 - 服务不通过 REST 接收密码、cookie、localStorage、授权请求头或 POST 数据。自动登录使用通用 setup fixture：资产只保存环境变量名或不透明 `secretRef`，值由 browser-runner 进程或注册的凭据解析器在运行时解析。
 - 同一 session/tab 只允许一个操作。并发请求返回 `TAB_BUSY`，不会在原 tab 上盲目重试。
 - 浏览器断线会把 session 标记为 `stale`，由调用方显式 reconnect，不产生幽灵 tab。
-- 每个操作都保存标注后截图；写动作保存操作前/后两张。DOM 只保存交互元素摘要和最多 8,000 字符可见文本，不保存完整 HTML。
+- 每个操作都保存标注后截图；写动作保存操作前/后两张。像素证据默认最多占用 5 秒，`evidenceTimeoutMs` 可调但不超过 15 秒；操作前截图超时返回 `EVIDENCE_CAPTURE_TIMEOUT` 且不执行写动作，不静默降级。DOM 只保存交互元素摘要和最多 8,000 字符可见文本，不保存完整 HTML。
 - `click`、`fill`、`upload` 等写动作必须传 `approvedScope`。原生弹框必须显式传 `dialogAction: "accept" | "dismiss"`；未声明时先安全驳回，再返回 `DIALOG_REQUIRED`。
 - deadline 或 cancel 会淘汰旧 tab 并把 session 置为 `stale`；后续动作只能由调用方显式 `reconnect`。
 - 核心不内置任何项目适配器。被测系统直接使用标准 URL、locator、HTTP 与文件断言；确有领域扩展时，由部署组合注册元数据，无需新建一个 adapter 仓库。
@@ -159,4 +159,4 @@ CLI 通过 `AGENT_EVAL_URL` 指定服务地址；JSON 参数也可用 `@/absolut
 npm test
 ```
 
-测试覆盖 stale session 的亚秒级结构化失败、deadline、取消、同 tab single-flight、脱敏证据和测试资产；真实 Chromium 用例另外验证强制授权、弹框策略、文本截断、文件上传、截图和 trace 落盘。
+测试覆盖 stale session 的亚秒级结构化失败、deadline、取消、同 tab single-flight、脱敏证据、截图独立上限和测试资产；真实 Chromium 用例另外验证强制授权、弹框策略、文本截断、文件上传、截图和 trace 落盘。

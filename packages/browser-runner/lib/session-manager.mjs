@@ -370,6 +370,10 @@ export class SessionManager {
         session.staleReason = normalized.code === "DEADLINE_EXCEEDED"
           ? "浏览器操作超时；旧 tab 已淘汰，必须显式 reconnect。"
           : "浏览器操作被取消；旧 tab 已淘汰，必须显式 reconnect。";
+        // Let nested Playwright calls observe the shared abort and release
+        // protocol handles before disposing their context. The wait is
+        // bounded because a provider call may never settle.
+        await budget.drain(250);
         await this.runner.closeContext(session.context).catch(() => {});
       }
       return errorEnvelope(normalized, meta, Date.now() - started, evidenceRefs);

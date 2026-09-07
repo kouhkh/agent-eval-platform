@@ -79,6 +79,38 @@ async function filesBelow(root) {
     .map((entry) => path.join(entry.parentPath || entry.path, entry.name));
 }
 
+test("a bounded before-screenshot failure prevents mutation and keeps the session inspectable", { timeout: 30_000 }, async () => {
+  const item = await realManager();
+  try {
+    const created = await item.manager.createSession();
+    const session = item.manager.get(created.sessionId);
+    await session.page.setContent('<button id="mutate" onclick="window.mutations = (window.mutations || 0) + 1">Mutate</button>');
+    const screenshot = session.page.screenshot.bind(session.page);
+    session.page.screenshot = async (options) => {
+      const error = new Error(`page.screenshot: Timeout ${options.timeout}ms exceeded`);
+      error.name = "TimeoutError";
+      throw error;
+    };
+    const startedAt = Date.now();
+    const result = await item.manager.act(created.sessionId, {
+      action: "click", target: { selector: "#mutate" }, approvedScope: "isolated evidence timeout fixture",
+      deadlineMs: 60_000, evidenceTimeoutMs: 75,
+    });
+    assert.equal(result.errorCode, "EVIDENCE_CAPTURE_TIMEOUT");
+    assert.equal(result.phase, "evidence");
+    assert.equal(await session.page.evaluate(() => window.mutations || 0), 0);
+    assert.equal(item.manager.get(created.sessionId).state, "ready");
+    assert.ok(Date.now() - startedAt < 2_000);
+    session.page.screenshot = screenshot;
+    const inspected = await item.manager.inspect(created.sessionId, { deadlineMs: 5_000 });
+    assert.equal(inspected.status, "succeeded");
+  } finally {
+    await item.manager.dispose();
+    await item.runner.close();
+    await rm(item.root, { recursive: true, force: true });
+  }
+});
+
 test("real Playwright runner enforces approval, dialog intent, bounded inspection, uploads, and evidence", { timeout: 30_000 }, async () => {
   const item = await realManager();
   try {

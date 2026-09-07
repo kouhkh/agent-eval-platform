@@ -30,6 +30,27 @@ function isHttpUrl(value) {
 
 const MUTATING_ACTIONS = new Set(["click", "dblclick", "fill", "select", "check", "uncheck", "press", "upload"]);
 const EVIDENCE_ATTRIBUTE = "data-agent-eval-evidence";
+const DEFAULT_EVIDENCE_TIMEOUT_MS = 5_000;
+const MAX_EVIDENCE_TIMEOUT_MS = 15_000;
+
+function evidenceTimeout(input, budget, evidenceDeadlineAt = null) {
+  const requested = Number(input?.evidenceTimeoutMs);
+  const limit = Number.isFinite(requested)
+    ? Math.max(1, Math.min(MAX_EVIDENCE_TIMEOUT_MS, Math.round(requested)))
+    : DEFAULT_EVIDENCE_TIMEOUT_MS;
+  const deadlineAt = evidenceDeadlineAt ?? Date.now() + Math.min(limit, budget.remainingMs());
+  return { deadlineAt, timeoutMs: Math.max(1, Math.min(deadlineAt - Date.now(), budget.remainingMs())) };
+}
+
+function evidenceCaptureError(error, timeoutMs, phase) {
+  if (error instanceof BrowserRunnerError) return error;
+  if (error?.name !== "TimeoutError" && !/timeout/i.test(String(error?.message || ""))) return error;
+  return new BrowserRunnerError(
+    "EVIDENCE_CAPTURE_TIMEOUT",
+    `像素证据在 ${timeoutMs}ms 内未完成；${phase === "before" ? "操作未执行" : "不能据此证明操作后界面状态"}。`,
+    { statusCode: 504, phase: "evidence", retryable: false, details: { evidencePhase: phase, timeoutMs } },
+  );
+}
 
 function approvedScope(input = {}) {
   const scope = String(input.approvedScope || input.authorization || "").trim().slice(0, 500);
@@ -307,7 +328,9 @@ export class PlaywrightRunner {
     const target = input.target || null;
     let targetInfo = null;
     let targetError = null;
-    const installBadge = () => page.evaluate(({ attribute, text }) => {
+    const evidenceBudget = evidenceTimeout(input, budget);
+    const installBadge = () => page.locator("html").evaluate((documentElement, { attribute, text }) => {
+      const document = documentElement.ownerDocument;
       document.querySelectorAll(`[${attribute}]`).forEach((node) => node.remove());
       const root = document.createElement("div");
       root.setAttribute(attribute, "root");
@@ -317,18 +340,19 @@ export class PlaywrightRunner {
       badge.style.cssText = "position:fixed;left:12px;top:12px;max-width:calc(100vw - 24px);padding:7px 11px;border-radius:6px;background:#dc2626;color:#fff;font-size:14px;font-weight:700;line-height:20px;box-shadow:0 2px 8px rgba(0,0,0,.28)";
       root.appendChild(badge);
       document.documentElement.appendChild(root);
-    }, { attribute: EVIDENCE_ATTRIBUTE, text: label });
-    await budget.run(installBadge, { onCancel: () => this.cancelPage(page) });
-    if (target) {
-      try {
+    }, { attribute: EVIDENCE_ATTRIBUTE, text: label }, { timeout: evidenceTimeout(input, budget, evidenceBudget.deadlineAt).timeoutMs });
+    try {
+      await installBadge();
+      if (target) {
+        try {
         const locator = locatorFor(page, target).first();
         // A successful click may intentionally unmount its target (navigation,
         // modal close, view switch). Evidence annotation is best-effort and
         // must not consume the operation's entire deadline while waiting for
         // that old element to reappear.
-        const annotationTimeoutMs = Math.max(1, Math.min(750, budget.remainingMs()));
-        await budget.run(() => locator.scrollIntoViewIfNeeded({ timeout: annotationTimeoutMs }), { onCancel: () => this.cancelPage(page) });
-        targetInfo = await budget.run(() => locator.evaluate((element, { attribute }) => {
+        const annotationTimeoutMs = Math.min(750, evidenceTimeout(input, budget, evidenceBudget.deadlineAt).timeoutMs);
+        await locator.scrollIntoViewIfNeeded({ timeout: annotationTimeoutMs });
+        targetInfo = await locator.evaluate((element, { attribute }) => {
           const rect = element.getBoundingClientRect();
           const root = document.querySelector(`[${attribute}="root"]`);
           if (root) {
@@ -350,13 +374,13 @@ export class PlaywrightRunner {
             x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height),
             tag: element.tagName, type: element.getAttribute("type"), disabled: Boolean(element.disabled || element.getAttribute("aria-disabled") === "true"),
           };
-        }, { attribute: EVIDENCE_ATTRIBUTE }, { timeout: annotationTimeoutMs }), { onCancel: () => this.cancelPage(page) });
-      } catch (error) {
-        targetError = trimText(error instanceof Error ? error.message : String(error), 500);
+        }, { attribute: EVIDENCE_ATTRIBUTE }, { timeout: Math.min(annotationTimeoutMs, evidenceTimeout(input, budget, evidenceBudget.deadlineAt).timeoutMs) });
+        } catch (error) {
+          targetError = trimText(error instanceof Error ? error.message : String(error), 500);
+        }
       }
-    }
-    try {
-      const buffer = await budget.run(() => page.screenshot({ type: "png" }), { onCancel: () => this.cancelPage(page) });
+      const screenshotTimeoutMs = evidenceTimeout(input, budget, evidenceBudget.deadlineAt).timeoutMs;
+      const buffer = await page.screenshot({ type: "png", timeout: screenshotTimeoutMs });
       return {
         phase,
         label,
@@ -367,6 +391,11 @@ export class PlaywrightRunner {
         url: sanitizeUrl(page.url()),
         buffer,
       };
+    } catch (error) {
+      throw evidenceCaptureError(error, Math.min(
+        Number.isFinite(Number(input?.evidenceTimeoutMs)) ? Math.max(1, Math.min(MAX_EVIDENCE_TIMEOUT_MS, Math.round(Number(input.evidenceTimeoutMs)))) : DEFAULT_EVIDENCE_TIMEOUT_MS,
+        budget.remainingMs(),
+      ), phase);
     } finally {
       await page.evaluate((attribute) => document.querySelectorAll(`[${attribute}]`).forEach((node) => node.remove()), EVIDENCE_ATTRIBUTE).catch(() => {});
     }
@@ -404,7 +433,10 @@ export class PlaywrightRunner {
     try {
       await task();
       if (input.dialogExpected === true) {
-        await budget.run(() => observedPromise, { onCancel: () => this.cancelPage(page) });
+        // SessionManager owns page cancellation for the outer operation.
+        // Closing the same context again from this nested budget listener can
+        // race Playwright protocol disposal and surface unbound handles.
+        await budget.run(() => observedPromise);
       }
       await after();
       await handling;
@@ -570,4 +602,4 @@ export class PlaywrightRunner {
   }
 }
 
-export { locatorFor, waitForCondition };
+export { evidenceTimeout, locatorFor, waitForCondition };
