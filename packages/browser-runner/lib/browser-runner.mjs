@@ -433,6 +433,7 @@ export class PlaywrightRunner {
     try {
       await task();
       if (input.dialogExpected === true) {
+        budget.setPhase("dialog");
         // SessionManager owns page cancellation for the outer operation.
         // Closing the same context again from this nested budget listener can
         // race Playwright protocol disposal and surface unbound handles.
