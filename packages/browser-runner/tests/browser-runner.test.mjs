@@ -424,6 +424,28 @@ test("HTTP returns 200 for execution-only completion and 422 for draft blocking"
   } finally { await closeService(item); }
 });
 
+test("serves the independent control-plane console without an application frontend", async () => {
+  const item = await serviceWithFake();
+  try {
+    const pageResponse = await fetch(`${item.baseUrl}/`);
+    assert.equal(pageResponse.status, 200);
+    assert.match(pageResponse.headers.get("content-type"), /text\/html/);
+    const page = await pageResponse.text();
+    assert.match(page, /评测控制台/);
+    assert.match(page, /\/console\.js/);
+
+    const scriptResponse = await fetch(`${item.baseUrl}/console.js`);
+    assert.equal(scriptResponse.status, 200);
+    const script = await scriptResponse.text();
+    assert.match(script, /assetState === 'runnable'/);
+    assert.match(script, /业务未评估/);
+    assert.match(script, /清理失败/);
+    assert.match(script, /caseSnapshot/);
+    assert.match(script, /runRequestErrors\.set/);
+    assert.match(script, /执行请求状态未确认/);
+  } finally { await closeService(item); }
+});
+
 test("generic setup fixture resolves baseUrl plus env and secretRef values without persisting plaintext", async () => {
   const username = "fixture-user-never-persist";
   const password = "fixture-password-never-persist";

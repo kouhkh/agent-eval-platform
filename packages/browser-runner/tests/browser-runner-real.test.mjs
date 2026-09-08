@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { PlaywrightRunner } from "../lib/browser-runner.mjs";
 import { EvidenceStore } from "../lib/evidence-store.mjs";
 import { SessionManager } from "../lib/session-manager.mjs";
+import { createBrowserService } from "../server.mjs";
 
 test("delayed dialogs, postcondition listener lifetime, and long text assertions", { timeout: 30000 }, async () => {
   const item = await realManager();
@@ -78,6 +79,35 @@ async function filesBelow(root) {
     .filter((entry) => entry.isFile())
     .map((entry) => path.join(entry.parentPath || entry.path, entry.name));
 }
+
+test("control-plane console keeps an unconfirmed run request error visible after refresh", { timeout: 30_000 }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-eval-console-real-"));
+  const runner = new PlaywrightRunner({ headless: true, profileRoot: path.join(root, "profiles") });
+  const testCase = { id: "network-failure", title: "网络失败用例", assetState: "runnable", draftIssues: [], version: 1, steps: [], assertions: [], cleanup: { steps: [] }, runs: [] };
+  const controlPlane = {
+    list: async () => [testCase],
+    get: async () => testCase,
+    run: async () => { throw new Error("synthetic connection reset"); },
+  };
+  const service = createBrowserService({ runner, controlPlane, dataRoot: root, heartbeatMs: 60_000 });
+  await new Promise((resolve) => service.server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${service.server.address().port}`;
+  try {
+    const created = await service.manager.createSession({ url: baseUrl });
+    const page = service.manager.get(created.sessionId).page;
+    await page.locator('[data-case-id="network-failure"]').click();
+    await page.locator("#run").click();
+    const error = page.locator("#run-request-error");
+    await error.waitFor({ state: "visible" });
+    assert.match(await error.textContent(), /执行请求状态未确认：synthetic connection reset/);
+    assert.equal(await page.locator("#run").isEnabled(), true);
+  } finally {
+    await service.manager.dispose();
+    await new Promise((resolve) => service.server.close(resolve));
+    await runner.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("a bounded before-screenshot failure prevents mutation and keeps the session inspectable", { timeout: 30_000 }, async () => {
   const item = await realManager();

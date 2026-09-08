@@ -2,6 +2,8 @@
 
 这是与 DSH 和被测应用解耦的 Playwright 执行服务。它把浏览器操作变成有截止时间、可追踪、可取消的结构化操作，并保存用例、断言、环境和执行证据。
 
+服务启动后访问 `http://127.0.0.1:4321/` 可打开独立评测控制台。控制台与 REST API 同源，不依赖 Planora 或其他被测应用发布；它展示测试资产的草稿门禁、执行时版本快照、执行状态与业务结论，以及清理失败证据。
+
 这里是正式浏览器运行时的唯一 source of truth。旧 `agent-browser-runtime` 仅作为迁移历史保留，不再作为可并行演进的第二套实现。具体边界见 [`docs/browser-runtime-consolidation.md`](../../docs/browser-runtime-consolidation.md)。
 
 ## 边界

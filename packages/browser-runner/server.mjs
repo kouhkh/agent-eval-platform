@@ -1,6 +1,6 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { EvidenceStore } from "./lib/evidence-store.mjs";
@@ -10,6 +10,11 @@ import { SessionManager } from "./lib/session-manager.mjs";
 import { TestControlPlane } from "./lib/test-control-plane.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+const CONSOLE_ASSETS = new Map([
+  ["/", { file: "index.html", type: "text/html; charset=utf-8" }],
+  ["/console.js", { file: "console.js", type: "text/javascript; charset=utf-8" }],
+  ["/console.css", { file: "console.css", type: "text/css; charset=utf-8" }],
+]);
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 function sendJson(response, statusCode, value) {
@@ -99,6 +104,13 @@ export function createBrowserService(options = {}) {
     try {
       const url = new URL(request.url, "http://127.0.0.1");
       const parts = pathParts(url);
+      if (request.method === "GET" && CONSOLE_ASSETS.has(url.pathname)) {
+        const asset = CONSOLE_ASSETS.get(url.pathname);
+        const body = await readFile(path.join(HERE, "public", asset.file));
+        response.writeHead(200, { "content-type": asset.type, "content-length": body.length, "cache-control": "no-store", "x-content-type-options": "nosniff" });
+        response.end(body);
+        return;
+      }
       if (request.method === "GET" && url.pathname === "/api/health") {
         const health = await runner.health();
         sendJson(response, 200, { ok: true, service: "agent-eval-browser-runner", mode: "dev", runner: health, sessionCount: manager.list().length, sessions: manager.list().map((item) => ({ sessionId: item.sessionId, tabId: item.tabId, state: item.state })) });
