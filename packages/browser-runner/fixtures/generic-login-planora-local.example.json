@@ -1,0 +1,28 @@
+{
+  "id": "planora-local-generic-login-example",
+  "title": "Planora 本地隔离副本登录检查",
+  "project": "planora-local",
+  "approvedScope": "使用本机专用测试账号登录本地 Planora 隔离副本并读取项目列表",
+  "assetState": "runnable",
+  "environment": {
+    "name": "local-isolated-copy",
+    "baseUrl": "http://127.0.0.1:3019/liutianci/",
+    "locale": "zh-CN"
+  },
+  "setup": {
+    "steps": [
+      { "operation": "navigate", "url": "login" },
+      { "operation": "act", "action": "fill", "target": { "label": "用户名" }, "valueFrom": { "env": "EVAL_PLANORA_USERNAME" } },
+      { "operation": "act", "action": "fill", "target": { "label": "密码" }, "valueFrom": { "env": "EVAL_PLANORA_PASSWORD" } },
+      { "operation": "act", "action": "click", "target": { "role": "button", "name": "登录" } },
+      { "operation": "assert", "type": "url", "expected": "dashboard/projects" }
+    ]
+  },
+  "startUrl": "dashboard/projects",
+  "steps": [],
+  "assertions": [
+    { "type": "url", "expected": "dashboard/projects" }
+  ],
+  "cleanup": { "steps": [] },
+  "sourceRevision": "replace-with-exact-planora-revision"
+}

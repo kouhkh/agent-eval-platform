@@ -136,6 +136,8 @@ CLI 通过 `AGENT_EVAL_URL` 指定服务地址；JSON 参数也可用 `@/absolut
 
 `valueFrom.env` 直接读取 browser-runner 进程的同名环境变量。`valueFrom.secretRef` 是不透明引用，由嵌入服务时传入的 `secretResolver(ref)` 解析；未注册解析器时闭合失败，不会回退到明文。
 
+本地 Planora 的无明文调用样例和当前 4321 运行时核对见 [`docs/local-planora-generic-login-20260908.md`](docs/local-planora-generic-login-20260908.md)。
+
 ### 可交错的测试步骤
 
 顶层 `steps` 与 setup 使用同一组 `operation: navigate | act | assert` 语义，因此可以表达“保存 → 刷新 → 断言持久化 → 恢复原值”这类有顺序要求的验收。旧资产中没有 `operation` 的步骤仍按 `act` 执行。

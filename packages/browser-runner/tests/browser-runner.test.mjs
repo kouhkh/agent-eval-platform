@@ -489,17 +489,41 @@ test("generic setup fixture resolves baseUrl plus env and secretRef values witho
 
     const persisted = await readFile(path.join(item.root, "test-cases.json"), "utf8");
     const evidence = await readFilesRecursively(path.join(item.root, "evidence"));
+    const allArtifacts = await readFilesRecursively(item.root);
     const evidenceFiles = await readdir(path.join(item.root, "evidence"), { recursive: true });
     const publicRun = JSON.stringify(result);
     for (const sensitive of [username, password]) {
       assert.doesNotMatch(persisted, new RegExp(sensitive));
       assert.doesNotMatch(evidence, new RegExp(sensitive));
+      assert.doesNotMatch(allArtifacts, new RegExp(sensitive));
       assert.doesNotMatch(publicRun, new RegExp(sensitive));
     }
     assert.match(persisted, /FIXTURE_USERNAME/);
     assert.match(persisted, /qa\/login\/password/);
     assert.equal(evidenceFiles.some((file) => String(file).endsWith(".png")), false);
+    assert.equal(evidenceFiles.some((file) => String(file).endsWith("trace.zip")), false);
     await item.service.manager.close(result.sessionId);
+  } finally { await closeService(item); }
+});
+
+test("local Planora login example is executable using runtime env references only", async () => {
+  const username = "planora-example-user-never-persist";
+  const password = "planora-example-password-never-persist";
+  const item = await serviceWithFake({ env: { EVAL_PLANORA_USERNAME: username, EVAL_PLANORA_PASSWORD: password } });
+  try {
+    const fixture = JSON.parse(await readFile(new URL("../fixtures/generic-login-planora-local.example.json", import.meta.url), "utf8"));
+    assert.doesNotMatch(JSON.stringify(fixture), new RegExp(`${username}|${password}`));
+    assert.deepEqual(fixture.setup.steps[1].valueFrom, { env: "EVAL_PLANORA_USERNAME" });
+    assert.deepEqual(fixture.setup.steps[2].valueFrom, { env: "EVAL_PLANORA_PASSWORD" });
+    const created = await item.service.controlPlane.create(fixture);
+    const result = await item.service.controlPlane.run(created.id, item.service.manager);
+    assert.equal(result.status, "passed");
+    assert.equal(result.tracePolicy.playwrightTrace, "suppressed");
+    const artifacts = await readFilesRecursively(item.root);
+    assert.doesNotMatch(artifacts, new RegExp(`${username}|${password}`));
+    assert.match(artifacts, /EVAL_PLANORA_USERNAME/);
+    assert.match(artifacts, /EVAL_PLANORA_PASSWORD/);
+    assert.equal((await readdir(item.root, { recursive: true })).some((file) => String(file).endsWith("trace.zip") || String(file).endsWith(".png")), false);
   } finally { await closeService(item); }
 });
 
