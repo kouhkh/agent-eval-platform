@@ -126,6 +126,35 @@ function normalizeUrlPattern(expected) {
   return pattern;
 }
 
+function responseWaitSpec(page, condition) {
+  if (!condition || String(condition.type || "") !== "response") return null;
+  const rawUrl = String(condition.url || "").trim();
+  const method = String(condition.method || "").trim().toUpperCase();
+  let url;
+  try {
+    url = new URL(rawUrl, page.url()).href;
+  } catch {
+    throw new BrowserRunnerError("INVALID_WAIT_CONDITION", "response 等待必须提供有效的精确 URL。", { statusCode: 422, phase: "wait" });
+  }
+  if (!rawUrl || !/^https?:$/i.test(new URL(url).protocol) || !/^[A-Z]+$/.test(method)) {
+    throw new BrowserRunnerError("INVALID_WAIT_CONDITION", "response 等待必须提供有效的精确 URL 和 method。", { statusCode: 422, phase: "wait" });
+  }
+  let dispose = () => {};
+  const promise = new Promise((resolve) => {
+    const handler = (response) => {
+      if (response.url() !== url || response.request().method().toUpperCase() !== method) return;
+      dispose();
+      resolve({ type: "response", url: sanitizeUrl(response.url()), method, status: response.status() });
+    };
+    dispose = () => page.off("response", handler);
+    page.on("response", handler);
+  });
+  // If the action itself fails, disposal leaves this promise intentionally
+  // pending. It has no active listener and does not keep the event loop alive.
+  promise.catch(() => {});
+  return { promise, dispose };
+}
+
 async function waitForCondition(page, condition, budget) {
   if (!condition) return null;
   const type = String(condition.type || "");
@@ -544,6 +573,7 @@ export class PlaywrightRunner {
     let dialog = null;
     let interaction = null;
     let locatorDetails = null;
+    let responseWait = null;
     try {
       const perform = async () => {
         if (action === "scroll") {
@@ -593,7 +623,13 @@ export class PlaywrightRunner {
         else throw new BrowserRunnerError("UNSUPPORTED_ACTION", `不支持的浏览器动作：${action}。`, { statusCode: 422, phase: "act" });
       };
       let waited = null;
-      const after = async () => { budget.setPhase("postcondition"); waited = await waitForCondition(page, input.waitFor, budget); };
+      responseWait = responseWaitSpec(page, input.waitFor);
+      const after = async () => {
+        budget.setPhase("postcondition");
+        waited = responseWait
+          ? await budget.run(() => responseWait.promise, { onCancel: () => responseWait.dispose() })
+          : await waitForCondition(page, input.waitFor, budget);
+      };
       if (mutating) dialog = await this.runWithDialogPolicy(page, input, perform, budget, after);
       else { await perform(); await after(); }
       budget.setPhase("after-evidence");
@@ -620,6 +656,8 @@ export class PlaywrightRunner {
         phaseTimings: budget.phaseSnapshot(),
         network: this.networkSince(page, networkCursor).events,
       });
+    } finally {
+      responseWait?.dispose();
     }
   }
 

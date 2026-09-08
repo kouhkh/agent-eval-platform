@@ -514,6 +514,17 @@ test("Planora local login example uses an exact submit target and waits for its 
   assert.deepEqual(login.waitFor, { type: "url", expected: "dashboard/projects" });
   const materialized = await materializeOperationStep(login, { baseUrl: fixture.environment.baseUrl });
   assert.equal(materialized.input.waitFor.expected, "http://127.0.0.1:3019/liutianci/dashboard/projects");
+  const response = await materializeOperationStep({
+    operation: "act",
+    action: "click",
+    target: { testId: "generate" },
+    waitFor: { type: "response", url: "api/generate", method: "POST" },
+  }, { baseUrl: fixture.environment.baseUrl });
+  assert.deepEqual(response.input.waitFor, {
+    type: "response",
+    url: "http://127.0.0.1:3019/liutianci/api/generate",
+    method: "POST",
+  });
 });
 
 test("local Planora login example is executable using runtime env references only", async () => {

@@ -62,6 +62,19 @@ POST /api/test-cases/:id/runs
 
 操作成功和失败都返回包含 `operationId`、`sessionId`、`tabId`、`status`、`elapsedMs`、`phase`、`errorCode` 和 `evidenceRefs` 的统一 envelope。
 `act` 还记录 `before-evidence`、`perform`、`dialog`、`postcondition` 和 `after-evidence` 阶段；超时错误的 `details.operationPhase` 指明最后阶段及已完成阶段耗时，不再只返回笼统的整体 deadline。
+
+需要把异步 HTTP 响应纳入同一动作证据窗口时，可在 `act` 中声明精确的 `waitFor.response`：
+
+```json
+{
+  "action": "click",
+  "target": { "role": "button", "name": "生成内容" },
+  "approvedScope": "执行已确认的本地回归步骤",
+  "waitFor": { "type": "response", "url": "/api/generate", "method": "POST" }
+}
+```
+
+响应监听在动作前安装，URL 和 method 都必须精确匹配；相对 URL 按用例的 `environment.baseUrl` 解析。任何 HTTP 状态（包括 4xx/5xx）都会结束等待并保留状态码，但不读取或落盘 body、headers 或 cookie；产品是否通过仍由独立断言决定。
 `inspect.elements` 把 `textContent`、`ariaLabel`、`nameAttribute` 分开，不把展示文本冒充成 accessible name。`accessibleNameStatus: "not-computed"` 表示本轮未计算可访问名；调用方应原样使用 `recommendedTarget.target`。优先级为 testId/uiKey/id/显式 aria-label；都缺失时返回标记为 `ephemeral` 的当前 DOM CSS 路径，不应直接固化为长期资产。
 
 ## CLI / MCP

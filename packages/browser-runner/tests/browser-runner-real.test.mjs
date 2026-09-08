@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
+import { createServer } from "node:http";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -79,6 +80,88 @@ async function filesBelow(root) {
     .filter((entry) => entry.isFile())
     .map((entry) => path.join(entry.parentPath || entry.path, entry.name));
 }
+
+test("act waits for one exact delayed HTTP response without persisting transport secrets", { timeout: 30_000 }, async () => {
+  const sensitive = "response-wait-secret-never-persist";
+  const http = createServer((request, response) => {
+    if (request.url === "/") {
+      response.writeHead(200, { "content-type": "text/html" });
+      response.end(`<!doctype html><button id="generate">Generate</button><script>
+        document.querySelector('#generate').onclick = async () => {
+          await fetch('/strategy');
+          await fetch('/generate', { method: 'POST', headers: { 'x-fixture-secret': '${sensitive}' }, body: '${sensitive}' });
+        };
+      </script>`);
+      return;
+    }
+    if (request.url === "/strategy") {
+      setTimeout(() => { response.writeHead(200); response.end("strategy"); }, 40);
+      return;
+    }
+    if (request.url === "/generate" && request.method === "POST") {
+      request.resume();
+      setTimeout(() => { response.writeHead(422, { "set-cookie": `fixture=${sensitive}` }); response.end(sensitive); }, 120);
+      return;
+    }
+    if (request.url === "/slow" && request.method === "POST") {
+      request.resume();
+      setTimeout(() => { response.writeHead(200); response.end("late"); }, 2_000);
+      return;
+    }
+    response.writeHead(404); response.end("missing");
+  });
+  await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${http.address().port}`;
+  const item = await realManager();
+  try {
+    const created = await item.manager.createSession({ url: baseUrl });
+    const page = item.manager.get(created.sessionId).page;
+    const responseListenerCount = page.listenerCount("response");
+    const result = await item.manager.act(created.sessionId, {
+      action: "click",
+      target: { selector: "#generate" },
+      approvedScope: "isolated delayed-response fixture",
+      waitFor: { type: "response", url: "/generate", method: "POST" },
+      deadlineMs: 5_000,
+    });
+    assert.equal(result.status, "succeeded", JSON.stringify(result.error));
+    assert.deepEqual(result.data.waitFor, { type: "response", url: `${baseUrl}/generate`, method: "POST", status: 422 });
+    assert.equal(page.listenerCount("response"), responseListenerCount);
+
+    const resultRef = result.evidenceRefs.find((ref) => ref.endsWith("result.json"));
+    const resultPath = path.join(item.root, "evidence", ...resultRef.replace("evidence://", "").split("/"));
+    const saved = JSON.parse(await readFile(resultPath, "utf8"));
+    assert.deepEqual(saved.waitFor, { type: "response", url: `${baseUrl}/generate`, method: "POST", status: 422 });
+    const networkRef = result.evidenceRefs.find((ref) => ref.endsWith("network.json"));
+    const networkPath = path.join(item.root, "evidence", ...networkRef.replace("evidence://", "").split("/"));
+    const network = JSON.parse(await readFile(networkPath, "utf8"));
+    assert.ok(network.some((entry) => entry.method === "GET" && entry.url === `${baseUrl}/strategy` && entry.status === 200));
+    assert.ok(network.some((entry) => entry.method === "POST" && entry.url === `${baseUrl}/generate` && entry.status === 422));
+    for (const file of await filesBelow(path.join(item.root, "evidence"))) {
+      assert.equal((await readFile(file)).includes(Buffer.from(sensitive)), false, file);
+    }
+
+    await page.setContent(`<button id="slow" onclick="fetch('${baseUrl}/slow', { method: 'POST' })">Slow</button>`);
+    const startedAt = Date.now();
+    const timedOut = await item.manager.act(created.sessionId, {
+      action: "click",
+      target: { selector: "#slow" },
+      approvedScope: "isolated response deadline fixture",
+      waitFor: { type: "response", url: `${baseUrl}/slow`, method: "POST" },
+      deadlineMs: 700,
+      evidenceTimeoutMs: 75,
+    });
+    assert.equal(timedOut.errorCode, "DEADLINE_EXCEEDED");
+    assert.ok(Date.now() - startedAt < 2_000);
+    assert.equal(page.listenerCount("response"), responseListenerCount);
+    assert.equal(item.manager.get(created.sessionId).state, "stale");
+  } finally {
+    await item.manager.dispose();
+    await item.runner.close();
+    await new Promise((resolve) => http.close(resolve));
+    await rm(item.root, { recursive: true, force: true });
+  }
+});
 
 test("control-plane console keeps an unconfirmed run request error visible after refresh", { timeout: 30_000 }, async () => {
   const root = await mkdtemp(path.join(tmpdir(), "agent-eval-console-real-"));
