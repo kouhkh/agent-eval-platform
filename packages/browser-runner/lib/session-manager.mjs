@@ -195,15 +195,31 @@ export class SessionManager {
     return publicSession(session);
   }
 
-  async close(sessionId) {
+  async close(sessionId, options = {}) {
     const session = this.get(sessionId);
     if (session.operation) session.operation.budget.cancel("cancel");
-    if (session.traceActive) await this.stopTrace(session).catch(() => {});
-    await this.runner.closeContext(session.context).catch(() => {});
+    const failures = [];
+    if (session.traceActive) {
+      try { await this.stopTrace(session); }
+      catch (error) {
+        const normalized = asBrowserRunnerError(error, { phase: "trace", statusCode: 502 });
+        session.traceError = normalized.toJSON();
+        failures.push(normalized);
+      }
+    }
+    try { await this.runner.closeContext(session.context); }
+    catch (error) { failures.push(asBrowserRunnerError(error, { phase: "close", statusCode: 502 })); }
     if (session.profileDir && this.profileOwners.get(session.profileDir) === sessionId) this.profileOwners.delete(session.profileDir);
     session.state = "closed";
     session.updatedAt = nowIso();
     session.operation = null;
+    if (options.strict === true && failures.length > 0) {
+      throw new BrowserRunnerError("SESSION_CLOSE_FAILED", "Session close did not complete cleanly.", {
+        statusCode: 502,
+        phase: "close",
+        details: { failures: failures.map((error) => error.toJSON()) },
+      });
+    }
     return publicSession(session);
   }
 

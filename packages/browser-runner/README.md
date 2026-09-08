@@ -80,7 +80,11 @@ CLI 通过 `AGENT_EVAL_URL` 指定服务地址；JSON 参数也可用 `@/absolut
 
 ## 测试资产
 
-`/api/test-cases` 提供第一版 CRUD。资产包含 `setup`、`steps`、人工确认后的 `assertions`、`environment`、`sourceRevision` 和 `policy.gate/nightly`。`POST /api/test-cases/:id/runs` 按这些权威断言执行并记录历史。轨迹不直接等于测试，浏览器运行器也不负责 Agent 自主规划。
+`/api/test-cases` 提供第一版 CRUD。资产包含 `assetState`、`draftIssues`、`setup`、`steps`、`cleanup`、人工确认后的 `assertions`、`environment`、`sourceRevision` 和 `policy.gate/nightly`。`assetState: "draft"` 或仍有 `draftIssues` 的资产会在创建浏览器 session 前以 `TEST_CASE_NOT_EXECUTABLE` 阻断；只有 `runnable` 且待补全项清零的版本可以执行。轨迹不直接等于测试，浏览器运行器也不负责 Agent 自主规划。
+
+每次 run 固化 `caseVersion`、不含运行历史的 `caseSnapshot` 及其 SHA-256 摘要。主步骤执行状态由 `executionStatus` 表达；业务判定由 `businessVerdict` 单独表达。没有权威断言的成功重放返回 `status: "completed"`、`executionStatus: "completed"`、`businessVerdict: "not_evaluated"`，不能写成业务通过。含权威断言且断言全部成功时才保留兼容字段 `status: "passed"`。HTTP 对 `completed` 和 `passed` 都返回 200。
+
+`cleanup.steps` 与 setup 使用相同的通用操作结构，在主步骤完成或中断后运行。清理操作、证据、错误以及平台拥有 session 的关闭结果都保存在同一 run 的 `cleanup` 字段；清理失败会让兼容字段 `status` 为 `failed`，不会被吞掉。
 
 ### 通用 setup fixture
 

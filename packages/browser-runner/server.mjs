@@ -121,7 +121,7 @@ export function createBrowserService(options = {}) {
             "GET /api/sessions/:id/trace": "停止并保存 Playwright trace；默认随后可重新建立 session。",
             "GET /api/test-cases": "列出控制平面中的测试资产。",
             "POST /api/test-cases": "创建测试资产（setup/步骤/断言/环境/门禁策略）。",
-            "POST /api/test-cases/:id/runs": "按已确认步骤和断言执行一个测试资产。",
+            "POST /api/test-cases/:id/runs": "执行 runnable 测试资产；draft 或待补全资产会被阻断。",
           },
           response: { operationId: "string", sessionId: "string", tabId: "string", status: "succeeded|failed|cancelling", elapsedMs: "number", phase: "string", errorCode: "string|null", evidenceRefs: "string[]" },
           setupFixture: {
@@ -137,6 +137,13 @@ export function createBrowserService(options = {}) {
             failureBehavior: "short-circuit",
             mutationAuthorization: "approvedScope required",
             nativeDialogPolicy: "explicit dialogAction=accept|dismiss; otherwise auto-dismiss and DIALOG_REQUIRED",
+          },
+          testRuns: {
+            executionStatus: "not_started|completed|interrupted",
+            businessVerdict: "passed|not_evaluated",
+            noAssertions: "status=completed, businessVerdict=not_evaluated",
+            cleanup: "records cleanup operations and session-close failures",
+            versionEvidence: "caseVersion + caseSnapshot + caseSnapshotDigest",
           },
           evidencePolicy: {
             screenshots: "mandatory per operation; before+after for mutations",
@@ -190,7 +197,12 @@ export function createBrowserService(options = {}) {
         if (request.method === "POST" && !caseId) { const body = await readJson(request); sendJson(response, 201, { testCase: await controlPlane.create(body) }); return; }
         if (request.method === "PATCH" && caseId && !action) { const body = await readJson(request); sendJson(response, 200, { testCase: await controlPlane.update(caseId, body) }); return; }
         if (request.method === "DELETE" && caseId && !action) { sendJson(response, 200, { testCase: await controlPlane.remove(caseId) }); return; }
-        if (request.method === "POST" && caseId && action === "runs") { const body = await readJson(request); const result = await controlPlane.run(caseId, manager, body); sendJson(response, result.status === "passed" ? 200 : 422, result); return; }
+        if (request.method === "POST" && caseId && action === "runs") {
+          const body = await readJson(request);
+          const result = await controlPlane.run(caseId, manager, body);
+          sendJson(response, ["passed", "completed"].includes(result.status) ? 200 : 422, result);
+          return;
+        }
       }
       sendJson(response, 404, { errorCode: "NOT_FOUND", error: { code: "NOT_FOUND", message: "没有对应的 API 路由。", phase: "router", retryable: false, details: null } });
     } catch (error) {

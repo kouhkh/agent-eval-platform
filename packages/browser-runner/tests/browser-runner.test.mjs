@@ -168,6 +168,12 @@ test("control plane persists a case with assertions and records runs", async () 
     assert.equal(created.version, 1);
     const result = await item.service.controlPlane.run(created.id, item.service.manager, { closeAfterRun: false });
     assert.equal(result.status, "passed");
+    assert.equal(result.executionStatus, "completed");
+    assert.equal(result.businessVerdict, "passed");
+    assert.equal(result.caseVersion, 1);
+    assert.equal(result.caseSnapshot.version, 1);
+    assert.equal(result.caseSnapshot.runs, undefined);
+    assert.match(result.caseSnapshotDigest, /^[a-f0-9]{64}$/);
     assert.ok(result.sessionId);
     const loaded = await item.service.controlPlane.get(created.id);
     assert.equal(loaded.runs.length, 1);
@@ -204,6 +210,8 @@ test("top-level steps interleave act, relative navigate, and assert while preser
     });
     const result = await item.service.controlPlane.run(created.id, item.service.manager, { closeAfterRun: false });
     assert.equal(result.status, "passed");
+    assert.equal(result.executionStatus, "completed");
+    assert.equal(result.businessVerdict, "passed");
     assert.deepEqual(item.runner.calls.filter((call) => call.operation !== "createContext").map((call) => call.operation), ["act", "navigate", "assert", "act"]);
     assert.equal(item.runner.calls.find((call) => call.operation === "navigate").url, "http://example.test/app/record/1");
     assert.equal(item.runner.calls.find((call) => call.operation === "assert").expected, "http://example.test/app/record/1");
@@ -224,7 +232,9 @@ test("legacy top-level steps without operation remain act steps", async () => {
     });
     assert.equal(created.steps[0].operation, "act");
     const result = await item.service.controlPlane.run(created.id, item.service.manager, { closeAfterRun: false });
-    assert.equal(result.status, "passed");
+    assert.equal(result.status, "completed");
+    assert.equal(result.executionStatus, "completed");
+    assert.equal(result.businessVerdict, "not_evaluated");
     assert.deepEqual(item.runner.calls.filter((call) => call.operation !== "createContext").map((call) => call.operation), ["act"]);
     await item.service.manager.close(result.sessionId);
   } finally { await closeService(item); }
@@ -239,7 +249,9 @@ test("top-level fill keeps an explicit non-secret value", async () => {
       steps: [{ operation: "act", action: "fill", target: { label: "Display name" }, value: "temporary test name" }],
     });
     const result = await item.service.controlPlane.run(created.id, item.service.manager, { closeAfterRun: false });
-    assert.equal(result.status, "passed");
+    assert.equal(result.status, "completed");
+    assert.equal(result.executionStatus, "completed");
+    assert.equal(result.businessVerdict, "not_evaluated");
     const fillCall = item.runner.calls.find((call) => call.operation === "act");
     assert.equal(fillCall.value, "temporary test name");
     await item.service.manager.close(result.sessionId);
@@ -273,6 +285,91 @@ test("a failed interleaved step records failure evidence and short-circuits late
     assert.match(evidence, /fixture-fail/);
     assert.doesNotMatch(evidence, /must-not-run|After/);
     await item.service.manager.close(result.sessionId);
+  } finally { await closeService(item); }
+});
+
+test("draft assets and unresolved issues hard-block execution before a session is created", async () => {
+  const item = await serviceWithFake();
+  try {
+    const created = await item.service.controlPlane.create({
+      title: "incomplete imported trace",
+      assetState: "draft",
+      draftIssues: [{ code: "MISSING_LOCATOR", stepId: "s01", message: "缺少唯一定位" }],
+      steps: [],
+    });
+    const result = await item.service.controlPlane.run(created.id, item.service.manager);
+    assert.equal(result.status, "blocked");
+    assert.equal(result.executionStatus, "not_started");
+    assert.equal(result.businessVerdict, "not_evaluated");
+    assert.equal(result.errorCode, "TEST_CASE_NOT_EXECUTABLE");
+    assert.equal(item.runner.calls.length, 0);
+  } finally { await closeService(item); }
+});
+
+test("cleanup runs after a completed main sequence and keeps cleanup failure evidence visible", async () => {
+  const item = await serviceWithFake();
+  try {
+    const created = await item.service.controlPlane.create({
+      title: "cleanup evidence",
+      approvedScope: "允许执行和清理本地测试夹具",
+      steps: [{ action: "click", target: { text: "Create temporary record" } }],
+      cleanup: { steps: [{ operation: "act", action: "fixture-fail", target: { text: "Remove temporary record" } }] },
+    });
+    const result = await item.service.controlPlane.run(created.id, item.service.manager, { closeAfterRun: false });
+    assert.equal(result.status, "failed");
+    assert.equal(result.executionStatus, "completed");
+    assert.equal(result.businessVerdict, "not_evaluated");
+    assert.equal(result.errorCode, "FIXTURE_STEP_FAILED");
+    assert.equal(result.cleanup.status, "failed");
+    assert.equal(result.cleanup.operations.length, 1);
+    assert.deepEqual(result.evidenceRefs, [
+      ...result.operations.flatMap((operation) => operation.evidenceRefs || []),
+      ...result.cleanup.evidenceRefs,
+    ]);
+    await item.service.manager.close(result.sessionId);
+  } finally { await closeService(item); }
+});
+
+test("owned session close failures are visible in the same run", async () => {
+  const item = await serviceWithFake();
+  try {
+    item.runner.stopTrace = async () => { throw new Error("trace stop failed"); };
+    const created = await item.service.controlPlane.create({
+      title: "close failure evidence",
+      approvedScope: "allow local fixture click",
+      steps: [{ action: "click", target: { text: "Run" } }],
+    });
+    const result = await item.service.controlPlane.run(created.id, item.service.manager);
+    assert.equal(result.status, "failed");
+    assert.equal(result.executionStatus, "completed");
+    assert.equal(result.errorCode, "SESSION_CLOSE_FAILED");
+    assert.equal(result.cleanup.status, "failed");
+    assert.equal(result.cleanup.sessionClose.status, "failed");
+    assert.match(result.cleanup.sessionClose.error, /Session close did not complete cleanly/);
+  } finally { await closeService(item); }
+});
+
+test("HTTP returns 200 for execution-only completion and 422 for draft blocking", async () => {
+  const item = await serviceWithFake();
+  try {
+    const headers = { "content-type": "application/json" };
+    const runnable = await fetch(`${item.baseUrl}/api/test-cases`, {
+      method: "POST", headers, body: JSON.stringify({ title: "execution only", steps: [] }),
+    }).then((response) => response.json());
+    const completedResponse = await fetch(`${item.baseUrl}/api/test-cases/${runnable.testCase.id}/runs`, {
+      method: "POST", headers, body: "{}",
+    });
+    assert.equal(completedResponse.status, 200);
+    assert.equal((await completedResponse.json()).status, "completed");
+
+    const draft = await fetch(`${item.baseUrl}/api/test-cases`, {
+      method: "POST", headers, body: JSON.stringify({ title: "draft", assetState: "draft", steps: [] }),
+    }).then((response) => response.json());
+    const blockedResponse = await fetch(`${item.baseUrl}/api/test-cases/${draft.testCase.id}/runs`, {
+      method: "POST", headers, body: "{}",
+    });
+    assert.equal(blockedResponse.status, 422);
+    assert.equal((await blockedResponse.json()).errorCode, "TEST_CASE_NOT_EXECUTABLE");
   } finally { await closeService(item); }
 });
 

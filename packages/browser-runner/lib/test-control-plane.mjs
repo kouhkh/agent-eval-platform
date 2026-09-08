@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { BrowserRunnerError } from "./operation-budget.mjs";
@@ -16,6 +16,35 @@ import {
 } from "./setup-fixture.mjs";
 
 function iso() { return new Date().toISOString(); }
+
+function jsonClone(value) { return JSON.parse(JSON.stringify(value)); }
+
+function normalizedDraftIssues(input, existing = []) {
+  const source = input === undefined ? existing : input;
+  if (!Array.isArray(source)) return [];
+  return source.filter(Boolean).slice(0, 500).map((issue) => {
+    if (typeof issue === "string") return { code: "UNRESOLVED_STEP", message: issue.slice(0, 1000) };
+    return {
+      code: String(issue.code || "UNRESOLVED_STEP").slice(0, 120),
+      message: String(issue.message || issue.detail || "待补全项").slice(0, 1000),
+      ...(issue.stepId == null ? {} : { stepId: String(issue.stepId).slice(0, 120) }),
+      ...(issue.sourceEventRef == null ? {} : { sourceEventRef: String(issue.sourceEventRef).slice(0, 240) }),
+    };
+  });
+}
+
+function caseSnapshot(testCase) {
+  const { runs: _runs, ...asset } = testCase;
+  return jsonClone(asset);
+}
+
+function snapshotDigest(snapshot) {
+  return createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+}
+
+function hasAuthoritativeAssertions(testCase) {
+  return testCase.assertions.length > 0 || testCase.steps.some((step) => step.operation === "assert");
+}
 
 async function executeOperationStep(step, options) {
   const materialized = await materializeOperationStep(step, {
@@ -42,6 +71,10 @@ function normalizeCase(input = {}, existing = {}) {
   const steps = normalizeTestSteps(input.steps, existing.steps);
   const assertions = Array.isArray(input.assertions) ? input.assertions.filter((item) => item && typeof item === "object").slice(0, 200) : (existing.assertions || []);
   const policy = input.policy && typeof input.policy === "object" ? input.policy : (existing.policy || {});
+  const assetState = String(input.assetState ?? existing.assetState ?? "runnable");
+  if (!["draft", "runnable"].includes(assetState)) {
+    throw new BrowserRunnerError("INVALID_ASSET_STATE", "assetState 只能是 draft 或 runnable。", { statusCode: 422, phase: "control-plane" });
+  }
   return {
     ...existing,
     id: existing.id || String(input.id || randomUUID()),
@@ -51,8 +84,11 @@ function normalizeCase(input = {}, existing = {}) {
     approvedScope: String(input.approvedScope ?? existing.approvedScope ?? "").trim().slice(0, 500),
     startUrl: String(input.startUrl ?? existing.startUrl ?? "").slice(0, 2000),
     setup: normalizeSetup(input.setup, existing.setup),
+    cleanup: normalizeSetup(input.cleanup, existing.cleanup),
     steps,
     assertions,
+    assetState,
+    draftIssues: normalizedDraftIssues(input.draftIssues, existing.draftIssues),
     environment: normalizeEnvironment(input.environment, existing.environment),
     sourceRevision: String(input.sourceRevision ?? existing.sourceRevision ?? "").slice(0, 120),
     policy: {
@@ -80,7 +116,15 @@ export class TestControlPlane {
   async load() {
     try {
       const data = JSON.parse(await readFile(this.statePath, "utf8"));
-      for (const item of Array.isArray(data.cases) ? data.cases : []) if (item?.id) this.cases.set(item.id, item);
+      for (const item of Array.isArray(data.cases) ? data.cases : []) {
+        if (!item?.id) continue;
+        this.cases.set(item.id, {
+          ...item,
+          assetState: item.assetState || "runnable",
+          draftIssues: normalizedDraftIssues(item.draftIssues),
+          cleanup: item.cleanup && Array.isArray(item.cleanup.steps) ? item.cleanup : { steps: [] },
+        });
+      }
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
@@ -115,22 +159,38 @@ export class TestControlPlane {
     const operationInput = () => ({ deadlineMs: input.deadlineMs, totalDeadlineAt });
     const approvedScope = String(input.approvedScope || testCase.approvedScope || "").trim().slice(0, 500);
     const setup = testCase.setup || { steps: [] };
-    const hasRuntimeValues = hasRuntimeSetupValues(setup) || hasRuntimeOperationValues(testCase.steps);
+    const cleanupFixture = testCase.cleanup || { steps: [] };
+    const hasRuntimeValues = hasRuntimeSetupValues(setup)
+      || hasRuntimeOperationValues(testCase.steps)
+      || hasRuntimeSetupValues(cleanupFixture);
     const baseUrl = input.baseUrl
       ? normalizeEnvironment({ baseUrl: input.baseUrl }).baseUrl
       : String(testCase.environment?.baseUrl || "");
     const startUrl = testCase.startUrl ? resolveAssetUrl(testCase.startUrl, baseUrl, "startUrl") : "";
+    const snapshot = caseSnapshot(testCase);
     const runMetadata = {
+      caseVersion: testCase.version,
+      caseSnapshot: snapshot,
+      caseSnapshotDigest: snapshotDigest(snapshot),
       environment: { ...testCase.environment, baseUrl: baseUrl || null },
       setup: { stepCount: setup.steps.length, runtimeValueRefs: hasRuntimeValues },
+      cleanupPlan: { stepCount: cleanupFixture.steps.length },
       tracePolicy: hasRuntimeValues
         ? { playwrightTrace: "suppressed", reason: "runtime-value setup may contain credentials" }
         : { playwrightTrace: "enabled", reason: null },
     };
-    if (hasRuntimeValues && sessionId) {
-      const run = {
+    const saveRun = async (run) => {
+      testCase.runs = [...(testCase.runs || []), run].slice(-50);
+      testCase.updatedAt = iso();
+      await this.persist();
+      return { testCaseId: id, ...run };
+    };
+    if (testCase.assetState !== "runnable" || testCase.draftIssues.length > 0) {
+      return saveRun({
         id: randomUUID(),
-        status: "failed",
+        status: "blocked",
+        executionStatus: "not_started",
+        businessVerdict: "not_evaluated",
         startedAt: new Date(startedAt).toISOString(),
         completedAt: iso(),
         elapsedMs: Date.now() - startedAt,
@@ -138,14 +198,32 @@ export class TestControlPlane {
         operations,
         evidenceRefs,
         ...runMetadata,
+        cleanup: { status: "not_started", operations: [], evidenceRefs: [] },
+        errorCode: "TEST_CASE_NOT_EXECUTABLE",
+        error: "测试资产仍是草稿或存在待补全项，不允许执行。",
+      });
+    }
+    if (hasRuntimeValues && sessionId) {
+      const run = {
+        id: randomUUID(),
+        status: "failed",
+        executionStatus: "not_started",
+        businessVerdict: "not_evaluated",
+        startedAt: new Date(startedAt).toISOString(),
+        completedAt: iso(),
+        elapsedMs: Date.now() - startedAt,
+        sessionId,
+        operations,
+        evidenceRefs,
+        ...runMetadata,
+        cleanup: { status: "not_started", operations: [], evidenceRefs: [] },
         error: "包含运行时凭据的 setup 必须使用该次 run 新建的独立 session，防止已开启的 trace 记录凭据。",
         errorCode: "SENSITIVE_SETUP_REQUIRES_OWN_SESSION",
       };
-      testCase.runs = [...(testCase.runs || []), run].slice(-50);
-      testCase.updatedAt = iso();
-      await this.persist();
-      return { testCaseId: id, ...run };
+      return saveRun(run);
     }
+    let primaryError = null;
+    let executionStatus = "not_started";
     try {
       if (!sessionId) {
         const session = await manager.createSession({
@@ -201,19 +279,75 @@ export class TestControlPlane {
         evidenceRefs.push(...(result.evidenceRefs || []));
         if (result.status !== "succeeded") throw new BrowserRunnerError(result.errorCode, result.error?.message || "测试断言失败。", { statusCode: result.httpStatus || 422, phase: result.phase });
       }
-      const run = { id: randomUUID(), status: "passed", startedAt: new Date(startedAt).toISOString(), completedAt: iso(), elapsedMs: Date.now() - startedAt, sessionId, operations, evidenceRefs, ...runMetadata };
-      testCase.runs = [...(testCase.runs || []), run].slice(-50);
-      testCase.updatedAt = iso();
-      await this.persist();
-      if (ownedSession && input.closeAfterRun !== false) await manager.close(sessionId).catch(() => {});
-      return { testCaseId: id, ...run };
+      executionStatus = "completed";
     } catch (error) {
-      const run = { id: randomUUID(), status: "failed", startedAt: new Date(startedAt).toISOString(), completedAt: iso(), elapsedMs: Date.now() - startedAt, sessionId, operations, evidenceRefs, ...runMetadata, errorCode: error instanceof BrowserRunnerError ? error.code : "TEST_RUN_FAILED", error: error instanceof Error ? error.message : String(error) };
-      testCase.runs = [...(testCase.runs || []), run].slice(-50);
-      testCase.updatedAt = iso();
-      await this.persist();
-      if (ownedSession && input.closeAfterRun !== false) await manager.close(sessionId).catch(() => {});
-      return { testCaseId: id, ...run };
+      primaryError = error;
+      executionStatus = "interrupted";
     }
+
+    const cleanup = { status: "not_required", operations: [], evidenceRefs: [] };
+    let cleanupError = null;
+    if (sessionId && cleanupFixture.steps.length > 0) {
+      cleanup.status = "running";
+      for (const cleanupStep of cleanupFixture.steps) {
+        try {
+          const result = await executeOperationStep(cleanupStep, {
+            manager,
+            sessionId,
+            baseUrl,
+            env: this.env,
+            secretResolver: this.secretResolver,
+            approvedScope,
+            operationInput: operationInput(),
+          });
+          cleanup.operations.push(result);
+          cleanup.evidenceRefs.push(...(result.evidenceRefs || []));
+          evidenceRefs.push(...(result.evidenceRefs || []));
+          if (result.status !== "succeeded") {
+            throw new BrowserRunnerError(result.errorCode, result.error?.message || "cleanup 操作失败。", { statusCode: result.httpStatus || 502, phase: result.phase });
+          }
+        } catch (error) {
+          cleanupError = error;
+          cleanup.status = "failed";
+          break;
+        }
+      }
+      if (!cleanupError) cleanup.status = "completed";
+    }
+    if (ownedSession && input.closeAfterRun !== false && sessionId) {
+      try {
+        await manager.close(sessionId, { strict: true });
+        cleanup.sessionClose = { status: "completed" };
+      } catch (error) {
+        cleanupError ||= error;
+        cleanup.status = "failed";
+        cleanup.sessionClose = { status: "failed", error: error instanceof Error ? error.message : String(error) };
+      }
+    }
+    if (cleanupError) {
+      cleanup.errorCode = cleanupError instanceof BrowserRunnerError ? cleanupError.code : "TEST_CLEANUP_FAILED";
+      cleanup.error = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+    }
+    const asserted = hasAuthoritativeAssertions(testCase);
+    const failed = Boolean(primaryError || cleanupError);
+    const run = {
+      id: randomUUID(),
+      status: failed ? "failed" : asserted ? "passed" : "completed",
+      executionStatus,
+      businessVerdict: primaryError ? "not_evaluated" : asserted ? "passed" : "not_evaluated",
+      startedAt: new Date(startedAt).toISOString(),
+      completedAt: iso(),
+      elapsedMs: Date.now() - startedAt,
+      sessionId,
+      operations,
+      evidenceRefs,
+      ...runMetadata,
+      cleanup,
+      ...(primaryError ? {
+        errorCode: primaryError instanceof BrowserRunnerError ? primaryError.code : "TEST_RUN_FAILED",
+        error: primaryError instanceof Error ? primaryError.message : String(primaryError),
+      } : cleanupError ? { errorCode: cleanup.errorCode, error: cleanup.error } : {}),
+    };
+    return saveRun(run);
   }
 }
