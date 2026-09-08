@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { createBrowserService } from "../server.mjs";
 import { EvidenceStore, sanitizeUrl } from "../lib/evidence-store.mjs";
 import { BrowserRunnerError } from "../lib/operation-budget.mjs";
+import { materializeOperationStep } from "../lib/setup-fixture.mjs";
 
 class FakePage {
   constructor() { this.currentUrl = "about:blank"; this.closed = false; this.cancelled = false; }
@@ -506,6 +507,15 @@ test("generic setup fixture resolves baseUrl plus env and secretRef values witho
   } finally { await closeService(item); }
 });
 
+test("Planora local login example uses an exact submit target and waits for its redirect", async () => {
+  const fixture = JSON.parse(await readFile(new URL("../fixtures/generic-login-planora-local.example.json", import.meta.url), "utf8"));
+  const login = fixture.setup.steps.find((step) => step.operation === "act" && step.action === "click");
+  assert.deepEqual(login.target, { role: "button", name: "登录", exact: true });
+  assert.deepEqual(login.waitFor, { type: "url", expected: "dashboard/projects" });
+  const materialized = await materializeOperationStep(login, { baseUrl: fixture.environment.baseUrl });
+  assert.equal(materialized.input.waitFor.expected, "http://127.0.0.1:3019/liutianci/dashboard/projects");
+});
+
 test("local Planora login example is executable using runtime env references only", async () => {
   const username = "planora-example-user-never-persist";
   const password = "planora-example-password-never-persist";
@@ -515,6 +525,7 @@ test("local Planora login example is executable using runtime env references onl
     assert.doesNotMatch(JSON.stringify(fixture), new RegExp(`${username}|${password}`));
     assert.deepEqual(fixture.setup.steps[1].valueFrom, { env: "EVAL_PLANORA_USERNAME" });
     assert.deepEqual(fixture.setup.steps[2].valueFrom, { env: "EVAL_PLANORA_PASSWORD" });
+    assert.deepEqual(fixture.setup.steps[3].target, { role: "button", name: "登录", exact: true });
     const created = await item.service.controlPlane.create(fixture);
     const result = await item.service.controlPlane.run(created.id, item.service.manager);
     assert.equal(result.status, "passed");

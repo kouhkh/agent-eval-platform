@@ -151,6 +151,12 @@ export async function materializeOperationStep(step, options = {}) {
   if (operation === "assert" && String(input.type || input.assertion || "") === "url" && typeof input.expected === "string") {
     input.expected = resolveAssetUrl(input.expected, options.baseUrl, "setup assert.expected");
   }
+  if (operation === "act" && String(input.waitFor?.type || "") === "url" && typeof input.waitFor.expected === "string") {
+    input.waitFor = {
+      ...input.waitFor,
+      expected: resolveAssetUrl(input.waitFor.expected, options.baseUrl, "setup act.waitFor.expected"),
+    };
+  }
   if (operation === "act" && String(input.action || "click") === "fill" && input.valueFrom != null) {
     const value = await resolveRuntimeValue(input.valueFrom, options);
     attachRuntimeValue(input, "value", value);

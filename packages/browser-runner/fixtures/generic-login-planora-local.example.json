@@ -14,7 +14,7 @@
       { "operation": "navigate", "url": "login" },
       { "operation": "act", "action": "fill", "target": { "label": "用户名" }, "valueFrom": { "env": "EVAL_PLANORA_USERNAME" } },
       { "operation": "act", "action": "fill", "target": { "label": "密码" }, "valueFrom": { "env": "EVAL_PLANORA_PASSWORD" } },
-      { "operation": "act", "action": "click", "target": { "role": "button", "name": "登录" } },
+      { "operation": "act", "action": "click", "target": { "role": "button", "name": "登录", "exact": true }, "waitFor": { "type": "url", "expected": "dashboard/projects" } },
       { "operation": "assert", "type": "url", "expected": "dashboard/projects" }
     ]
   },
