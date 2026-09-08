@@ -80,18 +80,80 @@ async function persistIndex(outputRoot, index) {
   return resultPath;
 }
 
+function pendingScenario(scenario) {
+  return {
+    scenarioId: scenario.id,
+    benchmarkKey: scenario.benchmarkKey,
+    scenarioType: scenario.scenarioType,
+    caseId: scenario.caseId,
+    copyRef: scenario.copyRef,
+    projectBinding: scenario.projectBinding,
+    attempts: 0,
+    retryPolicy: "none",
+    outcome: "not_started",
+    requestState: "not_started",
+    reasonCode: "NOT_STARTED",
+    caseRunId: null,
+    testCaseId: scenario.caseId,
+    caseVersion: null,
+    executionStatus: "not_started",
+    businessVerdict: "not_evaluated",
+    evidenceRefs: [],
+    error: null,
+    startedAt: null,
+    completedAt: null,
+    elapsedMs: null,
+    copyDisposition: "retained_for_investigation",
+  };
+}
+
+function summarize(scenarios) {
+  return scenarios.reduce((counts, item) => ({ ...counts, [item.outcome]: (counts[item.outcome] || 0) + 1 }), {
+    completed: 0,
+    failed: 0,
+    timed_out: 0,
+    not_executed: 0,
+    not_started: 0,
+    in_progress: 0,
+  });
+}
+
 export async function runFixedSuite(input, options = {}) {
   const suite = normalizeSuite(input);
   if (typeof options.executeCase !== "function") throw new TypeError("executeCase is required");
   const runId = String(options.runId || randomUUID());
   const startedAt = options.now ? options.now() : iso();
-  const scenarioRuns = [];
-  for (const scenario of suite.scenarios) {
+  const scenarioRuns = suite.scenarios.map(pendingScenario);
+  const index = {
+    schemaVersion: 1,
+    runId,
+    suite: { id: suite.id, title: suite.title },
+    application: suite.application,
+    baselineRef: suite.baselineRef,
+    startedAt,
+    completedAt: null,
+    status: "running",
+    retryPolicy: "none",
+    summary: summarize(scenarioRuns),
+    scenarios: scenarioRuns,
+  };
+  let indexPath = await persistIndex(options.outputRoot, index);
+  for (let scenarioIndex = 0; scenarioIndex < suite.scenarios.length; scenarioIndex += 1) {
+    const scenario = suite.scenarios[scenarioIndex];
     const scenarioStartedAt = options.now ? options.now() : iso();
+    Object.assign(scenarioRuns[scenarioIndex], {
+      attempts: 1,
+      outcome: "in_progress",
+      requestState: "request_pending",
+      reasonCode: null,
+      startedAt: scenarioStartedAt,
+    });
+    index.summary = summarize(scenarioRuns);
+    indexPath = await persistIndex(options.outputRoot, index);
     try {
       const result = await options.executeCase(scenario.caseId, scenario.runInput);
       const classified = classifyResult(result);
-      scenarioRuns.push({
+      scenarioRuns[scenarioIndex] = {
         scenarioId: scenario.id,
         benchmarkKey: scenario.benchmarkKey,
         scenarioType: scenario.scenarioType,
@@ -101,6 +163,7 @@ export async function runFixedSuite(input, options = {}) {
         attempts: 1,
         retryPolicy: "none",
         ...classified,
+        requestState: "settled",
         caseRunId: result?.id || null,
         testCaseId: result?.testCaseId || scenario.caseId,
         caseVersion: result?.caseVersion || null,
@@ -112,9 +175,9 @@ export async function runFixedSuite(input, options = {}) {
         completedAt: result?.completedAt || (options.now ? options.now() : iso()),
         elapsedMs: Number.isFinite(result?.elapsedMs) ? result.elapsedMs : null,
         copyDisposition: classified.outcome === "completed" ? "eligible_for_cleanup" : "retained_for_investigation",
-      });
+      };
     } catch (error) {
-      scenarioRuns.push({
+      scenarioRuns[scenarioIndex] = {
         scenarioId: scenario.id,
         benchmarkKey: scenario.benchmarkKey,
         scenarioType: scenario.scenarioType,
@@ -124,6 +187,7 @@ export async function runFixedSuite(input, options = {}) {
         attempts: 1,
         retryPolicy: "none",
         outcome: "failed",
+        requestState: "unknown",
         reasonCode: "REQUEST_STATUS_UNKNOWN",
         caseRunId: null,
         testCaseId: scenario.caseId,
@@ -136,24 +200,15 @@ export async function runFixedSuite(input, options = {}) {
         completedAt: options.now ? options.now() : iso(),
         elapsedMs: null,
         copyDisposition: "retained_for_investigation",
-      });
+      };
     }
+    index.summary = summarize(scenarioRuns);
+    indexPath = await persistIndex(options.outputRoot, index);
   }
-  const summary = scenarioRuns.reduce((counts, item) => ({ ...counts, [item.outcome]: (counts[item.outcome] || 0) + 1 }), { completed: 0, failed: 0, timed_out: 0, not_executed: 0 });
-  const index = {
-    schemaVersion: 1,
-    runId,
-    suite: { id: suite.id, title: suite.title },
-    application: suite.application,
-    baselineRef: suite.baselineRef,
-    startedAt,
-    completedAt: options.now ? options.now() : iso(),
-    status: summary.failed || summary.timed_out || summary.not_executed ? "attention_required" : "completed",
-    retryPolicy: "none",
-    summary,
-    scenarios: scenarioRuns,
-  };
-  const indexPath = await persistIndex(options.outputRoot, index);
+  index.completedAt = options.now ? options.now() : iso();
+  index.summary = summarize(scenarioRuns);
+  index.status = index.summary.failed || index.summary.timed_out || index.summary.not_executed ? "attention_required" : "completed";
+  indexPath = await persistIndex(options.outputRoot, index);
   return { index, indexPath };
 }
 
