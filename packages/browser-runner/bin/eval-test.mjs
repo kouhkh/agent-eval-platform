@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { runFixedSuite } from "../lib/test-suite-runner.mjs";
 
 const baseUrl = String(process.env.AGENT_EVAL_URL || "http://127.0.0.1:4321").replace(/\/$/, "");
 const args = process.argv.slice(2);
@@ -7,6 +10,7 @@ const args = process.argv.slice(2);
 function usage() {
   console.error(`用法：
   agent-eval test run <case.json>
+  agent-eval test suite <suite.json>
   agent-eval browser health
   agent-eval browser create [JSON|@file.json]
   agent-eval browser get <sessionId>
@@ -31,7 +35,7 @@ async function payload(token) {
 
 function output(value) {
   console.log(JSON.stringify(value, null, 2));
-  if (value?.status === "failed" || value?.errorCode) process.exitCode = 1;
+  if (["failed", "attention_required"].includes(value?.status) || value?.errorCode) process.exitCode = 1;
 }
 
 if (!args[0] || !args[1]) { usage(); } else {
@@ -46,6 +50,16 @@ if (!args[0] || !args[1]) { usage(); } else {
       if (!created.testCase?.id) { output(created); throw new Error("测试资产创建失败。"); }
       const result = await request(`/api/test-cases/${created.testCase.id}/runs`, { method: "POST", body: JSON.stringify({}) });
       output(result);
+    } else if (namespace === "test" && command === "suite") {
+      const file = args[2];
+      if (!file) { usage(); throw new Error("缺少 suite.json"); }
+      const manifest = JSON.parse(await readFile(file, "utf8"));
+      const outputRoot = path.resolve(process.env.AGENT_EVAL_SUITE_RUN_ROOT || path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "data", "suite-runs"));
+      const result = await runFixedSuite(manifest, {
+        outputRoot,
+        executeCase: async (caseId, runInput) => request(`/api/test-cases/${encodeURIComponent(caseId)}/runs`, { method: "POST", body: JSON.stringify(runInput || {}) }),
+      });
+      output({ status: result.index.status, runId: result.index.runId, summary: result.index.summary, indexPath: result.indexPath });
     } else if (namespace === "browser" && command === "health") {
       output(await request("/api/health"));
     } else if (namespace === "browser" && command === "create") {

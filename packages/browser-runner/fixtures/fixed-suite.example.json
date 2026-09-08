@@ -1,0 +1,21 @@
+{
+  "id": "planora-four-benchmarks-current",
+  "title": "四个标杆资料场景当前版本回归",
+  "application": {
+    "repository": "planora",
+    "revision": "0123456789abcdef0123456789abcdef01234567",
+    "dirty": true,
+    "dirtyDiffRef": "artifact://application/dirty.patch"
+  },
+  "baselineRef": "workspace://baseline/planora-current",
+  "scenarios": [
+    { "id": "jingzhou-outline", "benchmarkKey": "jingzhou", "scenarioType": "outline_generation", "caseId": "benchmark-jingzhou-outline", "copyRef": "workspace://copies/jingzhou-outline", "projectBinding": { "projectId": "prepared-jingzhou-outline" } },
+    { "id": "jingzhou-chapter", "benchmarkKey": "jingzhou", "scenarioType": "chapter_generation", "caseId": "benchmark-jingzhou-chapter", "copyRef": "workspace://copies/jingzhou-chapter", "projectBinding": { "projectId": "prepared-jingzhou-chapter" } },
+    { "id": "qidong-outline", "benchmarkKey": "qidong", "scenarioType": "outline_generation", "caseId": "benchmark-qidong-outline", "copyRef": "workspace://copies/qidong-outline", "projectBinding": { "projectId": "prepared-qidong-outline" } },
+    { "id": "qidong-chapter", "benchmarkKey": "qidong", "scenarioType": "chapter_generation", "caseId": "benchmark-qidong-chapter", "copyRef": "workspace://copies/qidong-chapter", "projectBinding": { "projectId": "prepared-qidong-chapter" } },
+    { "id": "sanming-outline", "benchmarkKey": "sanming", "scenarioType": "outline_generation", "caseId": "benchmark-sanming-outline", "copyRef": "workspace://copies/sanming-outline", "projectBinding": { "projectId": "prepared-sanming-outline" } },
+    { "id": "sanming-chapter", "benchmarkKey": "sanming", "scenarioType": "chapter_generation", "caseId": "benchmark-sanming-chapter", "copyRef": "workspace://copies/sanming-chapter", "projectBinding": { "projectId": "prepared-sanming-chapter" } },
+    { "id": "qinhuangdao-outline", "benchmarkKey": "qinhuangdao", "scenarioType": "outline_generation", "caseId": "benchmark-qinhuangdao-outline", "copyRef": "workspace://copies/qinhuangdao-outline", "projectBinding": { "projectId": "prepared-qinhuangdao-outline" } },
+    { "id": "qinhuangdao-chapter", "benchmarkKey": "qinhuangdao", "scenarioType": "chapter_generation", "caseId": "benchmark-qinhuangdao-chapter", "copyRef": "workspace://copies/qinhuangdao-chapter", "projectBinding": { "projectId": "prepared-qinhuangdao-chapter" } }
+  ]
+}

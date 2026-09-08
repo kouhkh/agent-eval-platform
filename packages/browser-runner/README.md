@@ -68,6 +68,7 @@ POST /api/test-cases/:id/runs
 
 ```sh
 npm run eval -- test run ./case.json
+npm run eval -- test suite ./fixtures/fixed-suite.example.json
 npm run eval -- browser health
 npm run eval -- browser create '{"url":"https://example.com"}'
 npm run eval -- browser inspect <sessionId>
@@ -79,6 +80,8 @@ npm run mcp
 ```
 
 CLI 通过 `AGENT_EVAL_URL` 指定服务地址；JSON 参数也可用 `@/absolute/path/request.json`。MCP 服务使用 stdio JSON-RPC，暴露 `createSession`、`navigate`、`inspect`、`act`、`assert`、`cancel`、`reconnect`、`close` 和 `getTrace`。
+
+`test suite` 只负责编排已经存在的测试资产，不创建项目副本，也不运行部署。输入必须提供精确的应用 revision；工作区有未提交改动时还必须提供 `dirtyDiffRef`。每个场景用稳定 `benchmarkKey` 与 `scenarioType` 标识业务资料和“目录生成/章节生成”，当次 `projectBinding`、`baselineRef` 与 `copyRef` 由外部 prepare 阶段传入。单项失败、超时或未执行不会阻断后续场景，也不会自动重试；结果索引将失败副本标记为 `retained_for_investigation`，并保存 case run id、版本、业务/执行状态和全部 evidenceRefs。默认索引写入 `data/suite-runs/<runId>/index.json`，可用 `AGENT_EVAL_SUITE_RUN_ROOT` 指定其他目录。
 
 ## 测试资产
 
