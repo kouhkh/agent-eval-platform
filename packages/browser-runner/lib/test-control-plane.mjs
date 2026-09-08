@@ -46,6 +46,19 @@ function hasAuthoritativeAssertions(testCase) {
   return testCase.assertions.length > 0 || testCase.steps.some((step) => step.operation === "assert");
 }
 
+function errorAuditDetails(error) {
+  const code = error instanceof BrowserRunnerError ? error.code : "TEST_CLEANUP_FAILED";
+  const phase = error instanceof BrowserRunnerError ? error.phase : "cleanup";
+  const failures = Array.isArray(error?.details?.failures)
+    ? error.details.failures.slice(0, 20).map((failure) => ({
+      code: String(failure?.code || "UNKNOWN_CLOSE_FAILURE").slice(0, 120),
+      phase: String(failure?.phase || "close").slice(0, 120),
+      retryable: failure?.retryable === true,
+    }))
+    : [];
+  return { code, phase, ...(failures.length > 0 ? { failures } : {}) };
+}
+
 async function executeOperationStep(step, options) {
   const materialized = await materializeOperationStep(step, {
     baseUrl: options.baseUrl,
@@ -180,8 +193,10 @@ export class TestControlPlane {
         : { playwrightTrace: "enabled", reason: null },
     };
     const saveRun = async (run) => {
-      testCase.runs = [...(testCase.runs || []), run].slice(-50);
-      testCase.updatedAt = iso();
+      const current = this.cases.get(String(id)) || testCase;
+      current.runs = [...(current.runs || []), run].slice(-50);
+      current.updatedAt = iso();
+      this.cases.set(current.id, current);
       await this.persist();
       return { testCaseId: id, ...run };
     };
@@ -321,12 +336,13 @@ export class TestControlPlane {
       } catch (error) {
         cleanupError ||= error;
         cleanup.status = "failed";
-        cleanup.sessionClose = { status: "failed", error: error instanceof Error ? error.message : String(error) };
+        cleanup.sessionClose = { status: "failed", ...errorAuditDetails(error) };
       }
     }
     if (cleanupError) {
       cleanup.errorCode = cleanupError instanceof BrowserRunnerError ? cleanupError.code : "TEST_CLEANUP_FAILED";
       cleanup.error = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+      cleanup.errorDetails = errorAuditDetails(cleanupError);
     }
     const asserted = hasAuthoritativeAssertions(testCase);
     const failed = Boolean(primaryError || cleanupError);

@@ -333,19 +333,70 @@ test("cleanup runs after a completed main sequence and keeps cleanup failure evi
 test("owned session close failures are visible in the same run", async () => {
   const item = await serviceWithFake();
   try {
-    item.runner.stopTrace = async () => { throw new Error("trace stop failed"); };
     const created = await item.service.controlPlane.create({
       title: "close failure evidence",
-      approvedScope: "allow local fixture click",
-      steps: [{ action: "click", target: { text: "Run" } }],
+      steps: [],
     });
-    const result = await item.service.controlPlane.run(created.id, item.service.manager);
+    const manager = {
+      createSession: async () => ({ sessionId: "synthetic-close" }),
+      close: async () => {
+        throw new BrowserRunnerError("SESSION_CLOSE_FAILED", "generic close message", {
+          phase: "close",
+          details: { failures: [{ code: "SYNTHETIC_DISK_FULL", phase: "trace", message: "must not persist" }] },
+        });
+      },
+    };
+    const result = await item.service.controlPlane.run(created.id, manager);
     assert.equal(result.status, "failed");
     assert.equal(result.executionStatus, "completed");
     assert.equal(result.errorCode, "SESSION_CLOSE_FAILED");
     assert.equal(result.cleanup.status, "failed");
     assert.equal(result.cleanup.sessionClose.status, "failed");
-    assert.match(result.cleanup.sessionClose.error, /Session close did not complete cleanly/);
+    assert.equal(result.cleanup.sessionClose.failures[0].code, "SYNTHETIC_DISK_FULL");
+    assert.equal(result.cleanup.sessionClose.failures[0].phase, "trace");
+    assert.doesNotMatch(JSON.stringify(result.cleanup.sessionClose), /must not persist/);
+  } finally { await closeService(item); }
+});
+
+test("a run finishing after a case update appends history to the latest version", async () => {
+  const item = await serviceWithFake();
+  try {
+    const created = await item.service.controlPlane.create({
+      title: "version one",
+      steps: [{ action: "click", target: { text: "A" } }],
+    });
+    let release;
+    let entered;
+    const barrier = new Promise((resolve) => { release = resolve; });
+    const started = new Promise((resolve) => { entered = resolve; });
+    const manager = {
+      createSession: async () => ({ sessionId: "synthetic-update" }),
+      act: async () => {
+        entered();
+        await barrier;
+        return { status: "succeeded", evidenceRefs: [] };
+      },
+      close: async () => ({}),
+    };
+    const runPromise = item.service.controlPlane.run(created.id, manager);
+    await started;
+    const updated = await item.service.controlPlane.update(created.id, {
+      title: "version two",
+      steps: [{ action: "click", target: { text: "B" } }],
+    });
+    release();
+    const run = await runPromise;
+    const stored = await item.service.controlPlane.get(created.id);
+    assert.equal(run.caseVersion, 1);
+    assert.equal(run.caseSnapshot.title, "version one");
+    assert.equal(updated.version, 2);
+    assert.equal(stored.version, 2);
+    assert.equal(stored.title, "version two");
+    assert.equal(stored.runs.length, 1);
+    assert.equal(stored.runs[0].caseVersion, 1);
+    const disk = JSON.parse(await readFile(path.join(item.root, "test-cases.json"), "utf8"));
+    assert.equal(disk.cases[0].version, 2);
+    assert.equal(disk.cases[0].runs.length, 1);
   } finally { await closeService(item); }
 });
 
