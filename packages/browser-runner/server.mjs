@@ -227,7 +227,16 @@ export function createBrowserService(options = {}) {
           const savedResponse = await pinAskRequest("/api/pinask", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(annotation) });
           const saved = await savedResponse.json().catch(() => ({}));
           if (!savedResponse.ok || !saved.item) throw new BrowserRunnerError("PINASK_SAVE_FAILED", saved.error || "PinAsk 标注保存失败。", { statusCode: savedResponse.status || 502, phase: "pinask" });
-          const queued = await dshRequest("/api/hitl-ui-changes", { method: "POST", body: JSON.stringify({ workspace: hitlWorkspace, annotation: saved.item }), timeoutMs: 15_000 });
+          let queued;
+          try {
+            queued = await dshRequest("/api/hitl-ui-changes", { method: "POST", body: JSON.stringify({ workspace: hitlWorkspace, annotation: saved.item }), timeoutMs: 15_000 });
+          } catch (error) {
+            throw new BrowserRunnerError("DSH_SUBMISSION_UNCONFIRMED", `PinAsk 已保存标注 ${saved.item.id}，但 DSH 排队状态未确认。请先查看历史，不要重复提交。`, {
+              statusCode: 502,
+              phase: "dsh-bridge",
+              details: { annotationId: saved.item.id, cause: error?.code || error?.name || "unknown" },
+            });
+          }
           sendJson(response, queued.deduplicated ? 200 : 202, { ...queued, annotation: { id: saved.item.id } });
           return;
         }

@@ -494,6 +494,36 @@ test("PinAsk annotations queue a fixed-workspace HITL job without trusting a cli
   }
 });
 
+test("a saved PinAsk annotation remains identifiable when DSH queue status is unknown", async () => {
+  const pinAsk = createServer(async (request, response) => {
+    const chunks = []; for await (const chunk of request) chunks.push(chunk);
+    response.setHeader("content-type", "application/json");
+    if (request.method === "POST" && request.url === "/api/pinask") response.end(JSON.stringify({ ok: true, item: { ...JSON.parse(Buffer.concat(chunks).toString("utf8")), id: "pq_saved_unknown" } }));
+    else if (request.method === "GET" && request.url.startsWith("/api/pinask")) response.end(JSON.stringify({ ok: true, items: [] }));
+    else { response.statusCode = 404; response.end("{}"); }
+  });
+  const dsh = createServer((request, response) => {
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/api/health") response.end(JSON.stringify({ ok: true, ready: true }));
+    else if (request.method === "POST" && request.url === "/api/hitl-ui-changes") { response.statusCode = 503; response.end(JSON.stringify({ error: { message: "synthetic queue outage" } })); }
+    else if (request.method === "GET" && request.url.startsWith("/api/jobs?")) response.end(JSON.stringify({ jobs: [] }));
+    else { response.statusCode = 404; response.end("{}"); }
+  });
+  await Promise.all([new Promise((resolve) => pinAsk.listen(0, "127.0.0.1", resolve)), new Promise((resolve) => dsh.listen(0, "127.0.0.1", resolve))]);
+  const item = await serviceWithFake({ pinAskUrl: `http://127.0.0.1:${pinAsk.address().port}`, dshBridgeUrl: `http://127.0.0.1:${dsh.address().port}`, hitlWorkspace: "/fixed/eval-console" });
+  try {
+    const response = await fetch(`${item.baseUrl}/api/hitl-ui/submit`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question: "fixture", ui_elements: [{ selector: "#save" }] }) });
+    assert.equal(response.status, 502);
+    const payload = await response.json();
+    assert.equal(payload.errorCode, "DSH_SUBMISSION_UNCONFIRMED");
+    assert.equal(payload.error.details.annotationId, "pq_saved_unknown");
+    assert.match(payload.error.message, /已保存.*状态未确认/);
+  } finally {
+    await closeService(item);
+    await Promise.all([new Promise((resolve) => pinAsk.close(resolve)), new Promise((resolve) => dsh.close(resolve))]);
+  }
+});
+
 test("control plane proxies read-only DSH proposals and persists human review", async () => {
   const confirmations = [{ id: "scope", question: "确认覆盖范围？", proposedValue: "保存与切章", blocking: true, evidence: ["event-1"] }];
   const job = { id: "11111111-1111-4111-8111-111111111111", kind: "test-proposal", status: "succeeded", permissionMode: "read-only", createdAt: new Date().toISOString(), result: { structuredOutput: { summary: "只读提案", confirmations, proposedSuites: { gate: [], nightly: [], manual: [] }, unknowns: [] } } };

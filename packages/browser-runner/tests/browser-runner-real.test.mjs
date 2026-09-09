@@ -225,6 +225,62 @@ test("control-plane list refreshes fixed-check history after a run without a pag
   }
 });
 
+test("PinAsk progress polling preserves expanded history and coalesces concurrent saves", { timeout: 30_000 }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-eval-pinask-real-"));
+  const runner = new PlaywrightRunner({ headless: true, profileRoot: path.join(root, "profiles") });
+  let pinAskSaves = 0;
+  let dshSubmissions = 0;
+  let dshPolls = 0;
+  const job = { id: "33333333-3333-4333-8333-333333333333", kind: "hitl-ui-change", status: "running", createdAt: "2026-09-09T00:00:00.000Z", question: "保留展开状态", live: { events: [{ text: "fixture" }] } };
+  const pinAsk = createServer(async (request, response) => {
+    const chunks = []; for await (const chunk of request) chunks.push(chunk);
+    if (request.url === "/overlay/pinask.js") {
+      response.writeHead(200, { "content-type": "text/javascript" });
+      response.end("window.PinAsk={mount(options){window.__pinaskOptions=options;const button=document.createElement('button');button.id='pinask-save';button.textContent='save';document.body.appendChild(button);},setOn(){}};");
+    } else if (request.url === "/overlay/pinask.css") { response.writeHead(200, { "content-type": "text/css" }); response.end(""); }
+    else if (request.method === "GET" && request.url.startsWith("/api/pinask")) { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ ok: true, items: [] })); }
+    else if (request.method === "POST" && request.url === "/api/pinask") { pinAskSaves += 1; response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ ok: true, item: { ...JSON.parse(Buffer.concat(chunks).toString("utf8")), id: "pq_real_fixture" } })); }
+    else { response.statusCode = 404; response.end("missing"); }
+  });
+  const dsh = createServer(async (request, response) => {
+    const chunks = []; for await (const chunk of request) chunks.push(chunk);
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/api/health") response.end(JSON.stringify({ ok: true, ready: true }));
+    else if (request.method === "GET" && request.url.startsWith("/api/jobs?")) { dshPolls += 1; response.end(JSON.stringify({ jobs: [job] })); }
+    else if (request.method === "POST" && request.url === "/api/hitl-ui-changes") { dshSubmissions += 1; await new Promise((resolve) => setTimeout(resolve, 150)); response.statusCode = 202; response.end(JSON.stringify({ job })); }
+    else { response.statusCode = 404; response.end("{}"); }
+  });
+  await Promise.all([new Promise((resolve) => pinAsk.listen(0, "127.0.0.1", resolve)), new Promise((resolve) => dsh.listen(0, "127.0.0.1", resolve))]);
+  const service = createBrowserService({ runner, dataRoot: root, heartbeatMs: 60_000, pinAskUrl: `http://127.0.0.1:${pinAsk.address().port}`, dshBridgeUrl: `http://127.0.0.1:${dsh.address().port}`, hitlWorkspace: "/fixed/eval-console" });
+  await new Promise((resolve) => service.server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${service.server.address().port}`;
+  try {
+    const created = await service.manager.createSession({ url: baseUrl });
+    const page = service.manager.get(created.sessionId).page;
+    await page.locator("#hitl-ball").click();
+    const details = page.locator(`[data-hitl-job="${job.id}"]`);
+    await details.waitFor({ state: "visible" });
+    await details.locator("summary").click();
+    assert.equal(await details.evaluate((element) => element.open), true);
+    const pollsBefore = dshPolls;
+    await page.waitForFunction((minimum) => window.performance.now() > minimum, await page.evaluate(() => performance.now() + 2_300));
+    assert.ok(dshPolls > pollsBefore, "the background poll ran");
+    assert.equal(await page.locator(`[data-hitl-job="${job.id}"]`).evaluate((element) => element.open), true);
+
+    const batch = { question: "只保存一次", ui_elements: [{ selector: "#hitl-ball" }] };
+    const results = await page.evaluate(async (value) => Promise.all([window.__pinaskOptions.onSave(value), window.__pinaskOptions.onSave(value)]), batch);
+    assert.equal(results[0].id, results[1].id);
+    assert.equal(pinAskSaves, 1);
+    assert.equal(dshSubmissions, 1);
+  } finally {
+    await service.manager.dispose();
+    await new Promise((resolve) => service.server.close(resolve));
+    await runner.close();
+    await Promise.all([new Promise((resolve) => pinAsk.close(resolve)), new Promise((resolve) => dsh.close(resolve))]);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a bounded before-screenshot failure prevents mutation and keeps the session inspectable", { timeout: 30_000 }, async () => {
   const item = await realManager();
   try {
