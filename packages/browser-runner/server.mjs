@@ -142,7 +142,6 @@ export function createBrowserService(options = {}) {
         if (request.method === "GET" && resource === "jobs" && !jobId) { sendJson(response, 200, await dshRequest(`/api/jobs?kind=test-proposal&limit=${Math.min(50, Number(url.searchParams.get("limit")) || 20)}`)); return; }
         if (request.method === "GET" && resource === "jobs" && jobId && !action) {
           const payload = await dshRequest(`/api/jobs/${encodeURIComponent(jobId)}`);
-          if (options.proposalPreset) payload.proposalContext = (await options.proposalPreset("current-trace"))?.context || null;
           try { payload.review = await controlPlane.get(`dsh-proposal-${jobId}`); } catch (error) { if (error?.code !== "TEST_CASE_NOT_FOUND") throw error; }
           sendJson(response, 200, payload);
           return;

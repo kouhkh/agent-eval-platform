@@ -470,6 +470,8 @@ test("control plane proxies read-only DSH proposals and persists human review", 
     const created = await fetch(`${item.baseUrl}/api/test-proposals/jobs`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ preset: "current-trace" }) }).then((value) => value.json());
     assert.equal(created.job.permissionMode, "read-only");
     assert.deepEqual(submitted, { workspace: "/allowed", trace: { events: [{ type: "click" }] } });
+    const historical = await fetch(`${item.baseUrl}/api/test-proposals/jobs/${job.id}`).then((value) => value.json());
+    assert.equal(historical.proposalContext, undefined, "a historical job must not inherit the current preset context");
     const draft = await fetch(`${item.baseUrl}/api/test-proposals/jobs/${job.id}/review`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "pending", answers: [{ id: "scope", value: "先保存草稿" }] }) }).then((value) => value.json());
     assert.equal(draft.testCase.humanConfirmation.status, "pending");
     const oversizedResponse = await fetch(`${item.baseUrl}/api/test-proposals/jobs/${job.id}/review`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "confirmed", answers: [{ id: "scope", value: `长${"x".repeat(4000)}DO_NOT_GENERATE` }] }) });
