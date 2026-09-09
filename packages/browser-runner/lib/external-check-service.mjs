@@ -12,6 +12,7 @@ export class ExternalCheckService {
     this.adapter = options.adapter || null;
     this.assets = new Map();
     this.runs = new Map();
+    this.executions = new Set();
     this.persistChain = Promise.resolve();
     this.loadPromise = this.load();
   }
@@ -74,13 +75,15 @@ export class ExternalCheckService {
 
   async start(id) {
     const asset = await this.get(id);
-    if (asset.history.some((run) => ["pending", "running"].includes(run.executionStatus))) {
+    const currentRuns = this.runs.get(asset.id) || [];
+    if (currentRuns.some((run) => ["pending", "running"].includes(run.executionStatus))) {
       throw new BrowserRunnerError("CHECK_ALREADY_RUNNING", "该检查已在执行。", { statusCode: 409, phase: "check-control" });
     }
     const run = {
       id: randomUUID(),
       checkId: asset.id,
       executionStatus: "pending",
+      executionOutcome: null,
       checkVerdict: "not_evaluated",
       businessVerdict: "not_evaluated",
       startedAt: now(),
@@ -94,10 +97,13 @@ export class ExternalCheckService {
       logTail: [],
       errorCode: null,
     };
-    this.runs.set(asset.id, [...(this.runs.get(asset.id) || []), run]);
+    this.runs.set(asset.id, [...currentRuns, run]);
     await this.persist();
-    queueMicrotask(() => { void this.execute(asset, run); });
-    return clone(run);
+    const pending = clone(run);
+    const execution = Promise.resolve().then(() => this.execute(asset, run));
+    this.executions.add(execution);
+    void execution.finally(() => this.executions.delete(execution)).catch(() => {});
+    return pending;
   }
 
   async execute(asset, run) {
@@ -113,13 +119,15 @@ export class ExternalCheckService {
       });
       Object.assign(run, result, {
         executionStatus: "finished",
+        executionOutcome: result.errorCode ? "review_required" : "completed",
         finishedAt: result.finishedAt || now(),
         elapsedMs: result.elapsedMs ?? Date.now() - started,
       });
     } catch (error) {
       Object.assign(run, {
         executionStatus: "finished",
-        checkVerdict: "failed",
+        executionOutcome: "failed",
+        checkVerdict: error?.reviewRequired === true ? "attention_required" : "not_evaluated",
         businessVerdict: "not_evaluated",
         finishedAt: now(),
         elapsedMs: Date.now() - started,

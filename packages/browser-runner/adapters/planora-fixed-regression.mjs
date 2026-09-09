@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -7,6 +8,7 @@ const SCENARIOS = { directory: "目录生成", chapter: "正文生成" };
 const readJson = async (file) => JSON.parse(await readFile(file, "utf8"));
 const exists = async (file) => { try { await access(file); return true; } catch { return false; } };
 const iso = (value) => value == null ? null : new Date(value).toISOString();
+const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
 function verdict(results) {
   if (results.some((item) => item.status === "fail")) return "failed";
@@ -29,21 +31,37 @@ async function evaluateResult(result, fallback = {}) {
   const preparedJobs = await readEvidence(/\/prepare-\d+-jobs\.json$/);
   const artifactRef = observation.artifactEvidenceRef || fallback.artifactRef || null;
   const artifactPresent = Boolean(artifactRef && await exists(artifactRef));
-  const nonEmpty = result?.scenario === "directory"
-    ? Number(artifact.chapterCount ?? fallback.outputNodes) > 0
-    : Number(artifact.contentBytes ?? fallback.contentCharacters) > 0;
+  let artifactDocument = null;
+  if (artifactPresent) { try { artifactDocument = await readJson(artifactRef); } catch { artifactDocument = null; } }
+  const chapters = Array.isArray(artifactDocument?.chapters) ? artifactDocument.chapters : null;
+  const targetChapter = chapters?.find((item) => item.id === observation.plan?.targetId) || null;
+  const directoryValid = chapters?.length > 0 && chapters.every((item) => typeof item.id === "string" && typeof item.title === "string" && item.title.trim());
+  const chapterContent = typeof targetChapter?.content === "string" ? targetChapter.content : "";
+  const nonEmpty = result?.scenario === "directory" ? directoryValid : chapterContent.trim().length > 0;
+  const bindingMatches = Boolean(job.id
+    && result.projectId === observation.plan?.projectId
+    && result.targetId === observation.plan?.targetId
+    && observation.projectId === observation.plan?.projectId
+    && observation.scenario === result.scenario
+    && observation.plan?.actorUserId === expected.actorUserId
+    && job.projectId === observation.plan?.projectId
+    && job.targetId === observation.plan?.targetId
+    && job.type === observation.plan?.jobType
+    && job.createdById === observation.plan?.actorUserId);
+  const beforeJobsKnown = Array.isArray(preparedJobs.value);
+  const terminal = ["succeeded", "failed", "cancelled", "needs_input"].includes(job.status);
   const checks = [
-    { checkId: "baseline-binding", label: "固定基线与输入绑定", status: expected.applicationRevision ? (result.applicationRevision === expected.applicationRevision && /^[a-f0-9]{64}$/.test(result.inputFingerprint || "") ? "pass" : "fail") : "unknown", expected: expected.applicationRevision || "application revision + input fingerprint", observed: result.applicationRevision || null, reasonCode: expected.applicationRevision ? null : "EXPECTED_BASELINE_UNAVAILABLE", evidenceRefs: [fallback.resultRef].filter(Boolean) },
+    { checkId: "baseline-binding", label: "固定基线与输入绑定", status: expected.applicationRevision && expected.inputFingerprint ? (result.applicationRevision === expected.applicationRevision && result.inputFingerprint === expected.inputFingerprint ? "pass" : "fail") : "unknown", expected: expected.applicationRevision && expected.inputFingerprint ? `${expected.applicationRevision} / ${expected.inputFingerprint}` : "application revision + pinned input fingerprint", observed: `${result.applicationRevision || "unknown"} / ${result.inputFingerprint || "unknown"}`, reasonCode: expected.applicationRevision && expected.inputFingerprint ? null : "EXPECTED_BASELINE_UNAVAILABLE", evidenceRefs: [fallback.resultRef, expected.ledgerPath].filter(Boolean) },
     { checkId: "request-contract", label: "生成请求方法、路径与响应", status: requestEvidence.value ? (requestEvidence.value.status == null ? "unknown" : requestEvidence.value.method === "POST" && requestEvidence.value.path === observation.plan?.requestPath && requestEvidence.value.status === 200 ? "pass" : "fail") : "unknown", expected: `POST ${observation.plan?.requestPath || "<planned path>"} -> 200`, observed: requestEvidence.value ? `${requestEvidence.value.method} ${requestEvidence.value.path} -> ${requestEvidence.value.status ?? "unknown"}` : null, reasonCode: requestEvidence.value?.status == null ? "REQUEST_HTTP_STATUS_UNKNOWN" : null, evidenceRefs: [requestEvidence.ref].filter(Boolean) },
-    { checkId: "new-job-binding", label: "新 job 与项目、目标和任务类型一致", status: job.id ? ((Array.isArray(preparedJobs.value) ? !preparedJobs.value.some((item) => item.id === job.id) : true) && job.projectId === observation.plan?.projectId && job.targetId === observation.plan?.targetId && job.type === observation.plan?.jobType ? (preparedJobs.value ? "pass" : "unknown") : "fail") : "unknown", expected: "new job absent before trigger and matches plan binding", observed: job.id || null, reasonCode: preparedJobs.value ? null : "BEFORE_JOB_SET_UNAVAILABLE", evidenceRefs: [preparedJobs.ref, observation.jobEvidenceRef].filter(Boolean) },
-    { checkId: "job-completed", label: "后台生成任务完成", status: job.status === "succeeded" ? "pass" : job.status ? "fail" : "unknown", expected: "job.status = succeeded", observed: job.status || null, reasonCode: observation.reason || null, evidenceRefs: observation.jobEvidenceRef ? [observation.jobEvidenceRef] : [] },
-    { checkId: "artifact-exists", label: "生成产物可读", status: artifactPresent ? "pass" : artifactRef ? "fail" : "unknown", expected: "artifact evidence exists", observed: artifactPresent, reasonCode: artifactRef ? null : "ARTIFACT_REF_MISSING", evidenceRefs: artifactRef ? [artifactRef] : [] },
-    { checkId: "artifact-non-empty", label: result?.scenario === "directory" ? "目录结构非空" : "正文内容非空", status: nonEmpty ? "pass" : artifactPresent ? "fail" : "unknown", expected: result?.scenario === "directory" ? "chapterCount > 0" : "contentBytes/contentCharacters > 0", observed: result?.scenario === "directory" ? (artifact.chapterCount ?? fallback.outputNodes ?? null) : (artifact.contentBytes ?? fallback.contentCharacters ?? null), reasonCode: nonEmpty ? null : "EMPTY_OR_UNOBSERVED_ARTIFACT", evidenceRefs: artifactRef ? [artifactRef] : [] },
+    { checkId: "new-job-binding", label: "新 job 与项目、目标、类型和执行人一致", status: !job.id || !beforeJobsKnown ? "unknown" : (!preparedJobs.value.some((item) => item.id === job.id) && bindingMatches ? "pass" : "fail"), expected: "new job absent before trigger and all plan bindings match", observed: job.id || null, reasonCode: beforeJobsKnown ? null : "BEFORE_JOB_SET_UNAVAILABLE", evidenceRefs: [preparedJobs.ref, observation.jobEvidenceRef].filter(Boolean) },
+    { checkId: "job-completed", label: "后台生成任务完成", status: !terminal || !job.finishedAt ? "unknown" : job.status === "succeeded" ? "pass" : "fail", expected: "terminal job.status = succeeded and finishedAt exists", observed: job.status ? `${job.status} / ${job.finishedAt || "unfinished"}` : null, reasonCode: observation.reason || null, evidenceRefs: observation.jobEvidenceRef ? [observation.jobEvidenceRef] : [] },
+    { checkId: "artifact-exists", label: "生成产物可读", status: !artifactRef ? "unknown" : artifactPresent && artifactDocument ? "pass" : "fail", expected: "artifact evidence exists and parses", observed: artifactPresent && Boolean(artifactDocument), reasonCode: artifactRef ? null : "ARTIFACT_REF_MISSING", evidenceRefs: artifactRef ? [artifactRef] : [] },
+    { checkId: "artifact-non-empty", label: result?.scenario === "directory" ? "目录结构非空" : "正文内容非空", status: !artifactDocument ? "unknown" : nonEmpty ? "pass" : "fail", expected: result?.scenario === "directory" ? "artifact chapters contain id/title and are non-empty" : "bound target chapter contains non-empty content", observed: result?.scenario === "directory" ? (chapters?.length ?? null) : (chapterContent ? Buffer.byteLength(chapterContent, "utf8") : 0), reasonCode: nonEmpty ? null : "EMPTY_OR_UNOBSERVED_ARTIFACT", evidenceRefs: artifactRef ? [artifactRef] : [] },
   ];
   return checks;
 }
 
-function assetFrom(benchmark, scenario, catalog) {
+function assetFrom(benchmark, scenario, catalog, seedLedger) {
   const spec = scenario === "directory" ? benchmark.directorySpec : benchmark.chapterSpec;
   const id = `fixed-${benchmark.benchmarkKey}-${scenario}`;
   return {
@@ -59,6 +77,9 @@ function assetFrom(benchmark, scenario, catalog) {
       configSha256: catalog.configSha256,
       inputSha256: benchmark.inputs.map((item) => item.sha256),
       ledgerSha256: { A: benchmark.A.sha256, B: benchmark.B.sha256 },
+      inputFingerprint: seedLedger.inputFingerprint,
+      actorUserId: seedLedger.actorUserId,
+      ledgerPath: scenario === "directory" ? benchmark.A.ledgerPath : benchmark.B.ledgerPath,
       ...(spec.chapterKey ? { chapterKey: spec.chapterKey } : {}),
     },
     method: "调用已有固定回归执行器；核对新 job 的终态、目标绑定和产物证据，再对目录结构或正文内容做非空检查。",
@@ -106,12 +127,24 @@ export function createPlanoraFixedRegressionAdapter(options = {}) {
   if (!configuredRoot) throw new Error("AGENT_EVAL_FIXED_ROOT is required");
   const root = path.resolve(configuredRoot);
   const generationRoot = path.join(root, "replay", "generation");
+  const runnerUrl = options.runnerUrl || process.env.AGENT_EVAL_RUNNER_URL || process.env.PLANORA_BENCHMARK_RUNNER_URL;
+  const runnerEvidenceRoot = options.runnerEvidenceRoot || process.env.AGENT_EVAL_RUNNER_EVIDENCE_ROOT || process.env.PLANORA_BENCHMARK_RUNNER_EVIDENCE_ROOT;
   return {
     async load() {
       const catalog = await readJson(path.join(generationRoot, "fixed-catalog.json"));
+      const configBytes = await readFile(catalog.configPath);
+      if (sha256(configBytes) !== catalog.configSha256) throw new Error("CONFIG_CHANGED");
       const first = await readJson(path.join(root, "runs", "first-eight-results.json"));
       const repeat = await readJson(path.join(root, "runs", "repeat-verification-summary.json"));
-      const assets = catalog.benchmarks.flatMap((benchmark) => [assetFrom(benchmark, "directory", catalog), assetFrom(benchmark, "chapter", catalog)]);
+      const assets = [];
+      for (const benchmark of catalog.benchmarks) {
+        for (const scenario of ["directory", "chapter"]) {
+          const ledgerRef = scenario === "directory" ? benchmark.A : benchmark.B;
+          const ledgerBytes = await readFile(ledgerRef.ledgerPath);
+          if (sha256(ledgerBytes) !== ledgerRef.sha256) throw new Error("PINNED_INPUT_CHANGED");
+          assets.push(assetFrom(benchmark, scenario, catalog, JSON.parse(ledgerBytes)));
+        }
+      }
       const history = Object.fromEntries(assets.map((asset) => [asset.id, []]));
       const byId = new Map(assets.map((asset) => [asset.id, asset]));
       for (const item of first) { const id = `fixed-${item.benchmark}-${item.scenario}`; history[id].push(await historicalRun(item, byId.get(id))); }
@@ -125,7 +158,7 @@ export function createPlanoraFixedRegressionAdapter(options = {}) {
       let tail = "";
       const startedAt = Date.now();
       const exit = await new Promise((resolve, reject) => {
-        const child = spawn(process.execPath, [script, executor.argument], { cwd: generationRoot, env: process.env, stdio: ["ignore", "pipe", "pipe"], shell: false });
+        const child = spawn(process.execPath, [script, executor.argument], { cwd: generationRoot, env: { ...process.env, ...(runnerUrl ? { PLANORA_BENCHMARK_RUNNER_URL: runnerUrl } : {}), ...(runnerEvidenceRoot ? { PLANORA_BENCHMARK_RUNNER_EVIDENCE_ROOT: runnerEvidenceRoot } : {}) }, stdio: ["ignore", "pipe", "pipe"], shell: false });
         const ingest = (chunk) => {
           const text = chunk.toString("utf8"); tail = `${tail}${text}`.slice(-40000);
           const match = tail.match(/Run output: (.+)/); if (match) outputDir = match[1].trim().split(/\r?\n/)[0];
@@ -146,7 +179,10 @@ export function createPlanoraFixedRegressionAdapter(options = {}) {
       }
       const result = await readJson(scenarioResult.resultRef);
       const catalog = await readJson(path.join(generationRoot, "fixed-catalog.json"));
-      const checkResults = await evaluateResult(result, { ...scenarioResult, expected: { applicationRevision: catalog.applicationRevision } });
+      const benchmark = catalog.benchmarks.find((item) => `${item.benchmarkKey}-${result.scenario}` === executor.argument);
+      const ledgerRef = result.scenario === "directory" ? benchmark?.A : benchmark?.B;
+      const ledger = ledgerRef ? await readJson(ledgerRef.ledgerPath) : null;
+      const checkResults = await evaluateResult(result, { ...scenarioResult, expected: { applicationRevision: catalog.applicationRevision, inputFingerprint: ledger?.inputFingerprint, actorUserId: ledger?.actorUserId, ledgerPath: ledgerRef?.ledgerPath } });
       return {
         checkVerdict: verdict(checkResults), businessVerdict: "not_evaluated", checkResults,
         startedAt: scenarioResult.startedAt || new Date(startedAt).toISOString(), finishedAt: scenarioResult.finishedAt || new Date().toISOString(),
