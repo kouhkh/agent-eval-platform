@@ -14,7 +14,23 @@ if (process.env.PLANORA_BENCHMARK_AUTH_FILE) {
   runtimeEnv.EVAL_PLANORA_USERNAME = auth.username;
   runtimeEnv.EVAL_PLANORA_PASSWORD = auth.password;
 }
-const service = createBrowserService({ dataRoot, env: runtimeEnv, headless: !/^(0|false|no)$/i.test(String(process.env.AGENT_EVAL_HEADLESS || "true")), externalCheckAdapter: createPlanoraFixedRegressionAdapter() });
+const proposalPreset = process.env.AGENT_EVAL_PROPOSAL_TRACE_PATH && process.env.AGENT_EVAL_PROPOSAL_WORKSPACE ? async () => {
+  const packet = JSON.parse(await readFile(process.env.AGENT_EVAL_PROPOSAL_TRACE_PATH, "utf8"));
+  return {
+    workspace: process.env.AGENT_EVAL_PROPOSAL_WORKSPACE,
+    trace: {
+      title: "Planora 正文保存与切章轨迹",
+      goal: "识别可形成上线门禁、夜间回归或仍需人工确认的测试提案",
+      environment: "local-dev",
+      recordedAt: new Date().toISOString(),
+      durationMs: 0,
+      events: packet.events,
+      notes: packet.caveats || [],
+    },
+    context: { source: path.basename(path.dirname(process.env.AGENT_EVAL_PROPOSAL_TRACE_PATH)), packetDigest: packet.packetDigest, mode: "read-only proposal only; do not generate or apply scripts" },
+  };
+} : null;
+const service = createBrowserService({ dataRoot, env: runtimeEnv, dshBridgeUrl: process.env.AGENT_EVAL_DSH_URL, proposalPreset, headless: !/^(0|false|no)$/i.test(String(process.env.AGENT_EVAL_HEADLESS || "true")), externalCheckAdapter: createPlanoraFixedRegressionAdapter() });
 service.server.listen(port, host, () => console.log(`agent-eval fixed regression console listening on http://${host}:${port}`));
 const shutdown = async () => { await service.manager.dispose(); await service.runner.close().catch(() => {}); service.server.close(() => process.exit(0)); };
 process.once("SIGINT", shutdown); process.once("SIGTERM", shutdown);

@@ -55,7 +55,16 @@ function normalizeHumanConfirmation(input, existing = {}) {
   const source = input === undefined ? existing : input;
   const status = String(source?.status || "pending");
   if (!["pending", "confirmed", "rejected"].includes(status)) throw new BrowserRunnerError("INVALID_CONFIRMATION_STATUS", "humanConfirmation.status 不合法。", { statusCode: 422, phase: "control-plane" });
-  return { status, questions: Array.isArray(source?.questions) ? source.questions.map(String).slice(0, 200) : [] };
+  const items = Array.isArray(source?.items) ? source.items.filter((item) => item && typeof item === "object").slice(0, 200).map((item, index) => ({
+    id: String(item.id || `confirmation-${index + 1}`).slice(0, 120),
+    question: String(item.question || "待确认项").slice(0, 1000),
+    proposedValue: String(item.proposedValue || "").slice(0, 4000),
+    humanValue: String(item.humanValue || "").slice(0, 4000),
+    blocking: item.blocking === true,
+    status: String(item.status || (item.humanValue ? "confirmed" : "unresolved")).slice(0, 40),
+    evidence: Array.isArray(item.evidence) ? item.evidence.map(String).slice(0, 20) : [],
+  })) : (existing.items || []);
+  return { status, questions: Array.isArray(source?.questions) ? source.questions.map(String).slice(0, 200) : [], items };
 }
 
 function caseSnapshot(testCase) {

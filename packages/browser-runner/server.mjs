@@ -98,6 +98,19 @@ export function createBrowserService(options = {}) {
     statePath: path.join(dataRoot, "external-check-runs.json"),
     adapter: options.externalCheckAdapter,
   });
+  const dshBridgeUrl = options.dshBridgeUrl || process.env.AGENT_EVAL_DSH_URL || null;
+  const dshRequest = async (pathname, init = {}) => {
+    if (!dshBridgeUrl) throw new BrowserRunnerError("DSH_NOT_CONFIGURED", "DSH 服务尚未配置。", { statusCode: 503, phase: "dsh-bridge" });
+    let response;
+    try {
+      response = await fetch(new URL(pathname, dshBridgeUrl), { ...init, signal: AbortSignal.timeout(init.timeoutMs || 10_000), headers: { "content-type": "application/json", ...init.headers } });
+    } catch (error) {
+      throw new BrowserRunnerError("DSH_UNREACHABLE", "暂时无法连接 DSH 服务。", { statusCode: 503, phase: "dsh-bridge", details: { cause: error?.name || "network" } });
+    }
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new BrowserRunnerError("DSH_REQUEST_FAILED", payload?.error?.message || payload?.message || (typeof payload?.error === "string" ? payload.error : "DSH 请求失败。"), { statusCode: response.status, phase: "dsh-bridge" });
+    return payload;
+  };
   const integrations = Array.isArray(options.integrations) ? options.integrations.map((item) => ({
     id: String(item.id || ""),
     version: String(item.version || "0.1.0"),
@@ -121,6 +134,51 @@ export function createBrowserService(options = {}) {
         sendJson(response, 200, { ok: true, service: "agent-eval-browser-runner", mode: "dev", runner: health, sessionCount: manager.list().length, sessions: manager.list().map((item) => ({ sessionId: item.sessionId, tabId: item.tabId, state: item.state })) });
         return;
       }
+      if (parts[0] === "api" && parts[1] === "test-proposals") {
+        const resource = parts[2];
+        const jobId = parts[3];
+        const action = parts[4];
+        if (request.method === "GET" && resource === "health") { sendJson(response, 200, await dshRequest("/api/health")); return; }
+        if (request.method === "GET" && resource === "jobs" && !jobId) { sendJson(response, 200, await dshRequest(`/api/jobs?kind=test-proposal&limit=${Math.min(50, Number(url.searchParams.get("limit")) || 20)}`)); return; }
+        if (request.method === "GET" && resource === "jobs" && jobId && !action) {
+          const payload = await dshRequest(`/api/jobs/${encodeURIComponent(jobId)}`);
+          try { payload.review = await controlPlane.get(`dsh-proposal-${jobId}`); } catch (error) { if (error?.code !== "TEST_CASE_NOT_FOUND") throw error; }
+          sendJson(response, 200, payload);
+          return;
+        }
+        if (request.method === "POST" && resource === "jobs" && !jobId) {
+          const body = await readJson(request);
+          const proposalInput = body.preset && options.proposalPreset ? await options.proposalPreset(body.preset) : body;
+          sendJson(response, 202, await dshRequest("/api/test-proposals", { method: "POST", body: JSON.stringify(proposalInput), timeoutMs: 15_000 }));
+          return;
+        }
+        if (request.method === "PATCH" && resource === "jobs" && jobId && action === "review") {
+          const body = await readJson(request);
+          const payload = await dshRequest(`/api/jobs/${encodeURIComponent(jobId)}`);
+          const output = payload.job?.result?.structuredOutput;
+          if (!output || !Array.isArray(output.confirmations)) throw new BrowserRunnerError("PROPOSAL_NOT_READY", "DSH 提案尚未生成可确认内容。", { statusCode: 409, phase: "dsh-review" });
+          const answers = new Map((Array.isArray(body.answers) ? body.answers : []).map((item) => [String(item.id), String(item.value || "").trim()]));
+          const items = output.confirmations.map((item, index) => ({
+            id: String(item.id || `confirmation-${index + 1}`), question: String(item.question || "待确认项"), proposedValue: String(item.proposedValue || ""),
+            humanValue: answers.get(String(item.id || `confirmation-${index + 1}`)) || "", blocking: item.blocking === true,
+            status: answers.get(String(item.id || `confirmation-${index + 1}`)) ? "confirmed" : "unresolved", evidence: Array.isArray(item.evidence) ? item.evidence.map(String) : [],
+          }));
+          const requestedStatus = String(body.status || "pending");
+          if (requestedStatus === "confirmed" && items.some((item) => item.blocking && !item.humanValue)) throw new BrowserRunnerError("CONFIRMATION_INCOMPLETE", "仍有必须确认的内容没有填写。", { statusCode: 422, phase: "dsh-review" });
+          const id = `dsh-proposal-${jobId}`;
+          const input = {
+            id, title: `DSH 提案 · ${String(output.summary || "轨迹分析").slice(0, 80)}`, description: String(output.summary || ""), project: "DSH 只读轨迹分析",
+            assetState: "draft", draftIssues: (output.unknowns || []).map((message) => ({ code: "DSH_UNKNOWN", message: String(message) })),
+            metadata: { kind: "dsh-proposal", proposalId: jobId },
+            humanConfirmation: { status: requestedStatus, questions: items.map((item) => item.question), items },
+          };
+          let testCase;
+          try { await controlPlane.get(id); testCase = await controlPlane.update(id, input); }
+          catch (error) { if (error?.code !== "TEST_CASE_NOT_FOUND") throw error; testCase = await controlPlane.create(input); }
+          sendJson(response, 200, { testCase });
+          return;
+        }
+      }
       if (request.method === "GET" && url.pathname === "/api/spec") {
         sendJson(response, 200, {
           service: "agent-eval-browser-runner",
@@ -141,6 +199,8 @@ export function createBrowserService(options = {}) {
             "POST /api/test-cases/:id/runs": "执行 runnable 测试资产；draft 或待补全资产会被阻断。",
             "GET /api/checks": "列出外部适配器注册的固定回归检查及历史。",
             "POST /api/checks/:id/runs": "通过资产预绑定的白名单执行入口启动回归；不接受任意命令。",
+            "GET|POST /api/test-proposals/jobs": "查看或启动 DSH 只读轨迹提案任务；不会应用代码。",
+            "PATCH /api/test-proposals/jobs/:id/review": "把人工确认内容保存为控制平面测试资产。",
           },
           response: { operationId: "string", sessionId: "string", tabId: "string", status: "succeeded|failed|cancelling", elapsedMs: "number", phase: "string", errorCode: "string|null", evidenceRefs: "string[]" },
           setupFixture: {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -438,13 +439,42 @@ test("serves the independent control-plane console without an application fronte
     const scriptResponse = await fetch(`${item.baseUrl}/console.js`);
     assert.equal(scriptResponse.status, 200);
     const script = await scriptResponse.text();
-    assert.match(script, /assetState === 'runnable'/);
+    assert.match(script, /assetState\s*===\s*'runnable'/);
     assert.match(script, /业务未评估/);
     assert.match(script, /清理失败/);
     assert.match(script, /caseSnapshot/);
     assert.match(script, /runRequestErrors\.set/);
     assert.match(script, /执行请求状态未确认/);
   } finally { await closeService(item); }
+});
+
+test("control plane proxies read-only DSH proposals and persists human review", async () => {
+  const confirmations = [{ id: "scope", question: "确认覆盖范围？", proposedValue: "保存与切章", blocking: true, evidence: ["event-1"] }];
+  const job = { id: "11111111-1111-4111-8111-111111111111", kind: "test-proposal", status: "succeeded", permissionMode: "read-only", createdAt: new Date().toISOString(), result: { structuredOutput: { summary: "只读提案", confirmations, proposedSuites: { gate: [], nightly: [], manual: [] }, unknowns: [] } } };
+  let submitted = null;
+  const dsh = createServer(async (request, response) => {
+    const chunks = []; for await (const chunk of request) chunks.push(chunk);
+    if (request.method === "POST") submitted = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/api/health") response.end(JSON.stringify({ ok: true, ready: true }));
+    else if (request.url.startsWith("/api/jobs?")) response.end(JSON.stringify({ jobs: [job] }));
+    else if (request.url === `/api/jobs/${job.id}`) response.end(JSON.stringify({ job }));
+    else if (request.url === "/api/test-proposals") { response.statusCode = 202; response.end(JSON.stringify({ job, pollUrl: `/api/jobs/${job.id}` })); }
+    else { response.statusCode = 404; response.end("{}"); }
+  });
+  await new Promise((resolve) => dsh.listen(0, "127.0.0.1", resolve));
+  const dshUrl = `http://127.0.0.1:${dsh.address().port}`;
+  const item = await serviceWithFake({ dshBridgeUrl: dshUrl, proposalPreset: async () => ({ workspace: "/allowed", trace: { events: [{ type: "click" }] } }) });
+  try {
+    assert.equal((await fetch(`${item.baseUrl}/api/test-proposals/health`).then((value) => value.json())).ready, true);
+    const created = await fetch(`${item.baseUrl}/api/test-proposals/jobs`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ preset: "current-trace" }) }).then((value) => value.json());
+    assert.equal(created.job.permissionMode, "read-only");
+    assert.deepEqual(submitted, { workspace: "/allowed", trace: { events: [{ type: "click" }] } });
+    const saved = await fetch(`${item.baseUrl}/api/test-proposals/jobs/${job.id}/review`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "confirmed", answers: [{ id: "scope", value: "只覆盖保存与切章" }] }) }).then((value) => value.json());
+    assert.equal(saved.testCase.humanConfirmation.status, "confirmed");
+    assert.equal(saved.testCase.humanConfirmation.items[0].humanValue, "只覆盖保存与切章");
+    assert.equal((await fetch(`${item.baseUrl}/api/test-proposals/jobs/${job.id}`).then((value) => value.json())).review.metadata.kind, "dsh-proposal");
+  } finally { await closeService(item); await new Promise((resolve) => dsh.close(resolve)); }
 });
 
 test("generic setup fixture resolves baseUrl plus env and secretRef values without persisting plaintext", async () => {

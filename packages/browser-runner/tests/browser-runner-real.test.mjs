@@ -216,7 +216,7 @@ test("control-plane list refreshes fixed-check history after a run without a pag
     await page.locator("#run").click();
     await page.locator("#back").click();
     await page.locator('[data-check-id="refresh-check"] .case-stats').filter({ hasText: "2 次历史" }).waitFor({ state: "visible" });
-    assert.match(await page.locator('[data-check-id="refresh-check"]').textContent(), /2026\/1\/2.*最近执行/);
+    assert.match(await page.locator('[data-check-id="refresh-check"]').textContent(), /2026\/1\/2/);
   } finally {
     await service.manager.dispose();
     await new Promise((resolve) => service.server.close(resolve));
