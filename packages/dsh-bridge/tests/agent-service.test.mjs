@@ -382,3 +382,43 @@ test("failed HITL jobs retry with the same id and preserve the prior run", async
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
 });
+
+test("a failed preserved commit can be reconciled after its equivalent patch is integrated", async () => {
+  const isolatedRoot = await mkdtemp(path.join(tmpdir(), "dsh-agent-reconcile-test-"));
+  const repository = path.join(isolatedRoot, "repository");
+  await mkdir(repository);
+  await writeFile(path.join(repository, "screen.txt"), "baseline\n");
+  await writeFile(path.join(repository, "package.json"), JSON.stringify({ private: true, scripts: { test: "node -e \"require('node:fs').accessSync('recovery.ok')\"" } }, null, 2));
+  await exec("git", ["init"], { cwd: repository });
+  await exec("git", ["config", "user.name", "Test"], { cwd: repository });
+  await exec("git", ["config", "user.email", "test@example.com"], { cwd: repository });
+  await exec("git", ["add", "."], { cwd: repository });
+  await exec("git", ["commit", "-m", "baseline"], { cwd: repository });
+  const runner = async (input) => {
+    await writeFile(path.join(input.workspace, "screen.txt"), "changed\n");
+    return { rawOutput: '{"summary":"ok","filesChanged":["screen.txt"],"verification":[],"remainingUnknowns":[]}', structuredOutput: { summary: "ok", filesChanged: ["screen.txt"], verification: [], remainingUnknowns: [] }, elapsedMs: 1 };
+  };
+  const { server } = createAgentService({ workspaceRoots: [isolatedRoot], dshRoot: isolatedRoot, runner, isolateWrites: true, prepareDependencies: false, sessionRoot: path.join(isolatedRoot, "sessions"), jobStatePath: path.join(isolatedRoot, "jobs.json") });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const submitted = await fetch(`${baseUrl}/api/hitl-ui-changes`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workspace: repository, annotation: { id: "pq_reconcile", question: "修改界面", ui_elements: [{ selector: "#screen" }] } }) }).then((response) => response.json());
+    const failed = await waitForJob(baseUrl, submitted.job.id);
+    assert.equal(failed.status, "failed");
+    assert.ok(failed.taskCommit);
+    await exec("git", ["cherry-pick", failed.taskCommit], { cwd: repository });
+    await writeFile(path.join(repository, "recovery.ok"), "verified\n");
+    await exec("git", ["add", "recovery.ok"], { cwd: repository });
+    await exec("git", ["commit", "-m", "restore verification fixture"], { cwd: repository });
+    const response = await fetch(`${baseUrl}/api/jobs/${failed.id}/actions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "reconcile" }) });
+    assert.equal(response.status, 200);
+    const reconciled = (await response.json()).job;
+    assert.equal(reconciled.status, "succeeded");
+    assert.equal(reconciled.integrationMethod, "equivalent-patch-reconciled");
+    assert.equal(reconciled.hostVerification.status, "passed");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await exec("git", ["worktree", "remove", "--force", path.join(isolatedRoot, "sessions", "pool", "slot-1")], { cwd: repository }).catch(() => {});
+    await rm(isolatedRoot, { recursive: true, force: true });
+  }
+});
