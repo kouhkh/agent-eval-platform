@@ -27,7 +27,7 @@ const proposalPreset = process.env.AGENT_EVAL_PROPOSAL_TRACE_PATH && process.env
       events: packet.events,
       notes: packet.caveats || [],
     },
-    context: { source: path.basename(path.dirname(process.env.AGENT_EVAL_PROPOSAL_TRACE_PATH)), packetDigest: packet.packetDigest, mode: "read-only proposal only; do not generate or apply scripts" },
+    context: { source: path.basename(path.dirname(process.env.AGENT_EVAL_PROPOSAL_TRACE_PATH)), packetDigest: packet.packetDigest, sourceRevision: packet.evidence?.find((item) => item?.revision)?.revision || null, mode: "read-only proposal only; do not generate or apply scripts" },
   };
 } : null;
 const service = createBrowserService({ dataRoot, env: runtimeEnv, dshBridgeUrl: process.env.AGENT_EVAL_DSH_URL, proposalPreset, headless: !/^(0|false|no)$/i.test(String(process.env.AGENT_EVAL_HEADLESS || "true")), externalCheckAdapter: createPlanoraFixedRegressionAdapter() });

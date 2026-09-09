@@ -142,6 +142,7 @@ export function createBrowserService(options = {}) {
         if (request.method === "GET" && resource === "jobs" && !jobId) { sendJson(response, 200, await dshRequest(`/api/jobs?kind=test-proposal&limit=${Math.min(50, Number(url.searchParams.get("limit")) || 20)}`)); return; }
         if (request.method === "GET" && resource === "jobs" && jobId && !action) {
           const payload = await dshRequest(`/api/jobs/${encodeURIComponent(jobId)}`);
+          if (options.proposalPreset) payload.proposalContext = (await options.proposalPreset("current-trace"))?.context || null;
           try { payload.review = await controlPlane.get(`dsh-proposal-${jobId}`); } catch (error) { if (error?.code !== "TEST_CASE_NOT_FOUND") throw error; }
           sendJson(response, 200, payload);
           return;
@@ -157,7 +158,10 @@ export function createBrowserService(options = {}) {
           const payload = await dshRequest(`/api/jobs/${encodeURIComponent(jobId)}`);
           const output = payload.job?.result?.structuredOutput;
           if (!output || !Array.isArray(output.confirmations)) throw new BrowserRunnerError("PROPOSAL_NOT_READY", "DSH 提案尚未生成可确认内容。", { statusCode: 409, phase: "dsh-review" });
-          const answers = new Map((Array.isArray(body.answers) ? body.answers : []).map((item) => [String(item.id), String(item.value || "").trim()]));
+          const rawAnswers = Array.isArray(body.answers) ? body.answers : [];
+          const oversizedAnswer = rawAnswers.find((item) => String(item?.value || "").length > 4000);
+          if (oversizedAnswer) throw new BrowserRunnerError("CONFIRMATION_TOO_LONG", "单项确认内容不能超过 4000 个字符，请精简后再保存。", { statusCode: 422, phase: "dsh-review" });
+          const answers = new Map(rawAnswers.map((item) => [String(item.id), String(item.value || "").trim()]));
           const items = output.confirmations.map((item, index) => ({
             id: String(item.id || `confirmation-${index + 1}`), question: String(item.question || "待确认项"), proposedValue: String(item.proposedValue || ""),
             humanValue: answers.get(String(item.id || `confirmation-${index + 1}`)) || "", blocking: item.blocking === true,

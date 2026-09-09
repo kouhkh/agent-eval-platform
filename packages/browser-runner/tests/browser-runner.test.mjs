@@ -470,6 +470,14 @@ test("control plane proxies read-only DSH proposals and persists human review", 
     const created = await fetch(`${item.baseUrl}/api/test-proposals/jobs`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ preset: "current-trace" }) }).then((value) => value.json());
     assert.equal(created.job.permissionMode, "read-only");
     assert.deepEqual(submitted, { workspace: "/allowed", trace: { events: [{ type: "click" }] } });
+    const draft = await fetch(`${item.baseUrl}/api/test-proposals/jobs/${job.id}/review`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "pending", answers: [{ id: "scope", value: "先保存草稿" }] }) }).then((value) => value.json());
+    assert.equal(draft.testCase.humanConfirmation.status, "pending");
+    const oversizedResponse = await fetch(`${item.baseUrl}/api/test-proposals/jobs/${job.id}/review`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "confirmed", answers: [{ id: "scope", value: `长${"x".repeat(4000)}DO_NOT_GENERATE` }] }) });
+    assert.equal(oversizedResponse.status, 422);
+    const afterRejection = await fetch(`${item.baseUrl}/api/test-proposals/jobs/${job.id}`).then((value) => value.json());
+    assert.equal(afterRejection.review.humanConfirmation.status, "pending");
+    assert.equal(afterRejection.review.humanConfirmation.items[0].humanValue, "先保存草稿");
+    assert.deepEqual(afterRejection.review.runs, []);
     const saved = await fetch(`${item.baseUrl}/api/test-proposals/jobs/${job.id}/review`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "confirmed", answers: [{ id: "scope", value: "只覆盖保存与切章" }] }) }).then((value) => value.json());
     assert.equal(saved.testCase.humanConfirmation.status, "confirmed");
     assert.equal(saved.testCase.humanConfirmation.items[0].humanValue, "只覆盖保存与切章");
