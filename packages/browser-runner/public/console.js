@@ -83,8 +83,9 @@ async function showCheck(id) {
 }
 async function runCheck(id) { try { await api(`/api/checks/${encodeURIComponent(id)}/runs`, { method: 'POST', body: '{}' }); await showCheck(id); } catch (error) { window.alert(error.message); await showCheck(id); } }
 function renderCurrentMode() { currentMode === 'checks' ? renderChecks(cachedChecks) : renderCases(cachedCases); navChecks.classList.toggle('active', currentMode === 'checks'); navCases.classList.toggle('active', currentMode === 'cases'); }
-function showList() { ++viewToken; detailView.classList.add('hidden'); listView.classList.remove('hidden'); renderCurrentMode(); }
-async function load() { try { const [checkData, caseData, healthData] = await Promise.all([api('/api/checks'), api('/api/test-cases'), api('/api/health')]); health.textContent = healthData.ok ? '运行器已连接' : '运行器异常'; health.className = `health ${healthData.ok ? 'ok' : 'bad'}`; cachedChecks = checkData.checks || []; cachedCases = caseData.cases || []; if (!cachedChecks.length) currentMode = 'cases'; renderCurrentMode(); } catch (error) { health.textContent = '控制平面未连接'; health.className = 'health bad'; caseList.innerHTML = `<div class="error large">${escapeHtml(error.message)}</div>`; } }
+async function refreshList(token, chooseFallback = false) { try { const [checkData, caseData, healthData] = await Promise.all([api('/api/checks'), api('/api/test-cases'), api('/api/health')]); if (token !== viewToken) return; health.textContent = healthData.ok ? '运行器已连接' : '运行器异常'; health.className = `health ${healthData.ok ? 'ok' : 'bad'}`; cachedChecks = checkData.checks || []; cachedCases = caseData.cases || []; if (chooseFallback && !cachedChecks.length) currentMode = 'cases'; renderCurrentMode(); } catch (error) { if (token !== viewToken) return; health.textContent = '控制平面未连接'; health.className = 'health bad'; caseList.innerHTML = `<div class="error large">${escapeHtml(error.message)}</div>`; } }
+function showList() { const token = ++viewToken; detailView.classList.add('hidden'); listView.classList.remove('hidden'); renderCurrentMode(); void refreshList(token); }
+async function load() { await refreshList(viewToken, true); }
 navChecks.addEventListener('click', () => { currentMode = 'checks'; showList(); });
 navCases.addEventListener('click', () => { currentMode = 'cases'; showList(); });
 void load();

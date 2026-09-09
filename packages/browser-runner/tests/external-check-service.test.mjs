@@ -25,7 +25,7 @@ test("real fixture integration imports eight checks when an explicit asset root 
     assert.equal(jingzhou.latestRun.executionStatus, "finished");
     assert.equal(jingzhou.latestRun.checkVerdict, "passed");
     assert.equal(jingzhou.latestRun.businessVerdict, "not_evaluated");
-    assert.deepEqual(jingzhou.latestRun.checkResults.map((item) => item.checkId), ["baseline-binding", "request-contract", "new-job-binding", "job-completed", "artifact-exists", "artifact-non-empty"]);
+    assert.deepEqual(jingzhou.latestRun.checkResults.map((item) => item.checkId), ["baseline-binding", "request-contract", "new-job-binding", "job-completed", "artifact-exists", "artifact-binding", "artifact-non-empty"]);
     const qidong = await service.get("fixed-qidong-directory");
     assert.equal(qidong.latestRun.checkVerdict, "failed");
     const sanming = await service.get("fixed-sanming-chapter");
@@ -45,9 +45,9 @@ async function portableFixture(root) {
   const ledgerA = path.join(root, "ledger-a.json"); const ledgerB = path.join(root, "ledger-b.json"); const shaA = await save(ledgerA, ledger); const shaB = await save(ledgerB, ledger);
   const before = path.join(evidence, "prepare-0003-jobs.json"); const request = path.join(evidence, "observe-0001-request-reference.json");
   await save(before, []); await save(request, { method: "POST", path: "/api/projects/p/chapters/generate", status: 200 });
-  const artifact = path.join(evidence, "artifact.json"); await save(artifact, { id: "p", chapters: [{ id: "c", title: "Chapter", content: "body" }] });
+  const artifact = path.join(evidence, "artifact.json"); await save(artifact, { id: "p", chapters: [{ id: "c", title: "Chapter", businessLine: "bid_plan", content: "body" }] });
   const resultRef = path.join(evidence, "result.json");
-  const result = { state: "objective_completed", scenario: "directory", applicationRevision: "revision", inputFingerprint: ledger.inputFingerprint, projectId: "p", targetId: "p:bid_plan", observation: { reason: "ok", projectId: "p", scenario: "directory", plan: { projectId: "p", targetId: "p:bid_plan", jobType: "outline", actorUserId: "actor", requestPath: "/api/projects/p/chapters/generate" }, job: { id: "j", projectId: "p", targetId: "p:bid_plan", type: "outline", createdById: "actor", status: "succeeded", startedAt: "2026-01-01T00:00:00.000Z", finishedAt: "2026-01-01T00:00:01.000Z" }, artifact: { chapterCount: 1 }, artifactEvidenceRef: artifact, evidenceRefs: [before, request] } };
+  const result = { state: "objective_completed", scenario: "directory", applicationRevision: "revision", inputFingerprint: ledger.inputFingerprint, projectId: "p", targetId: "p:bid_plan", observation: { reason: "ok", projectId: "p", scenario: "directory", plan: { projectId: "p", targetId: "p:bid_plan", scenario: "directory", businessLine: "bid_plan", jobType: "outline", actorUserId: "actor", requestPath: "/api/projects/p/chapters/generate" }, job: { id: "j", projectId: "p", targetId: "p:bid_plan", type: "outline", createdById: "actor", status: "succeeded", startedAt: "2026-01-01T00:00:00.000Z", finishedAt: "2026-01-01T00:00:01.000Z" }, artifact: { chapterCount: 1 }, artifactEvidenceRef: artifact, evidenceRefs: [before, request] } };
   await save(resultRef, result);
   const catalog = { applicationRevision: "revision", configPath, configSha256, benchmarks: [{ benchmarkKey: "jingzhou", inputs: [], A: { ledgerPath: ledgerA, sha256: shaA }, B: { ledgerPath: ledgerB, sha256: shaB }, directorySpec: { scenario: "directory" }, chapterSpec: { scenario: "chapter", chapterKey: "c" } }] };
   await save(path.join(generation, "fixed-catalog.json"), catalog);
@@ -72,7 +72,16 @@ test("portable adapter fixture verifies real bindings and leaves absent evidence
     assert.equal(results["new-job-binding"], "unknown");
     assert.equal(results["job-completed"], "unknown");
     assert.equal(results["artifact-exists"], "fail");
+    assert.equal(results["artifact-binding"], "unknown");
     assert.equal(results["artifact-non-empty"], "unknown");
+    await writeFile(fixture.artifact, `${JSON.stringify({ id: "foreign-project", chapters: [{ id: "foreign-chapter", title: "Foreign", businessLine: "wrong-line" }] })}\n`);
+    checks = await new ExternalCheckService({ statePath: path.join(root, "state-c.json"), adapter: createPlanoraFixedRegressionAdapter({ root }) }).list();
+    assert.equal(Object.fromEntries(checks[0].latestRun.checkResults.map((item) => [item.checkId, item.status]))["artifact-binding"], "fail");
+    await rm(fixture.artifact);
+    checks = await new ExternalCheckService({ statePath: path.join(root, "state-d.json"), adapter: createPlanoraFixedRegressionAdapter({ root }) }).list();
+    const missing = Object.fromEntries(checks[0].latestRun.checkResults.map((item) => [item.checkId, item]));
+    assert.equal(missing["artifact-exists"].status, "unknown");
+    assert.equal(missing["artifact-exists"].reasonCode, "ARTIFACT_EVIDENCE_UNAVAILABLE");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

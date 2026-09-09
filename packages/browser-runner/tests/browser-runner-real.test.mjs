@@ -192,6 +192,39 @@ test("control-plane console keeps an unconfirmed run request error visible after
   }
 });
 
+test("control-plane list refreshes fixed-check history after a run without a page reload", { timeout: 30_000 }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-eval-console-refresh-"));
+  const runner = new PlaywrightRunner({ headless: true, profileRoot: path.join(root, "profiles") });
+  const history = [{ id: "old", executionStatus: "finished", checkVerdict: "passed", businessVerdict: "not_evaluated", startedAt: "2026-01-01T00:00:00.000Z", checkResults: [], evidenceRefs: [] }];
+  const check = () => ({ id: "refresh-check", title: "刷新检查", project: "fixture", purpose: "验证列表刷新", method: "fixture", basis: "fixture", baseline: { version: "v1", applicationRevision: "abc" }, proposedQualityChecks: [], history: structuredClone(history), latestRun: structuredClone(history.at(-1)) });
+  const externalChecks = {
+    list: async () => [check()],
+    get: async () => check(),
+    start: async () => {
+      const run = { id: "new", executionStatus: "finished", checkVerdict: "passed", businessVerdict: "not_evaluated", startedAt: "2026-01-02T00:00:00.000Z", checkResults: [], evidenceRefs: [] };
+      history.push(run);
+      return structuredClone(run);
+    },
+  };
+  const service = createBrowserService({ runner, externalChecks, dataRoot: root, heartbeatMs: 60_000 });
+  await new Promise((resolve) => service.server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${service.server.address().port}`;
+  try {
+    const created = await service.manager.createSession({ url: baseUrl });
+    const page = service.manager.get(created.sessionId).page;
+    await page.locator('[data-check-id="refresh-check"]').click();
+    await page.locator("#run").click();
+    await page.locator("#back").click();
+    await page.locator('[data-check-id="refresh-check"] .case-stats').filter({ hasText: "2 次历史" }).waitFor({ state: "visible" });
+    assert.match(await page.locator('[data-check-id="refresh-check"]').textContent(), /2026\/1\/2.*最近执行/);
+  } finally {
+    await service.manager.dispose();
+    await new Promise((resolve) => service.server.close(resolve));
+    await runner.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a bounded before-screenshot failure prevents mutation and keeps the session inspectable", { timeout: 30_000 }, async () => {
   const item = await realManager();
   try {

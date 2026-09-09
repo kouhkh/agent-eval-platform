@@ -35,14 +35,18 @@ async function evaluateResult(result, fallback = {}) {
   if (artifactPresent) { try { artifactDocument = await readJson(artifactRef); } catch { artifactDocument = null; } }
   const chapters = Array.isArray(artifactDocument?.chapters) ? artifactDocument.chapters : null;
   const targetChapter = chapters?.find((item) => item.id === observation.plan?.targetId) || null;
-  const directoryValid = chapters?.length > 0 && chapters.every((item) => typeof item.id === "string" && typeof item.title === "string" && item.title.trim());
+  const artifactBindingMatches = Boolean(artifactDocument
+    && artifactDocument.id === observation.plan?.projectId
+    && (result?.scenario === "directory"
+      ? chapters?.every((item) => item.businessLine === observation.plan?.businessLine)
+      : targetChapter));
+  const directoryValid = artifactBindingMatches && chapters?.length > 0 && chapters.every((item) => typeof item.id === "string" && typeof item.title === "string" && item.title.trim());
   const chapterContent = typeof targetChapter?.content === "string" ? targetChapter.content : "";
   const nonEmpty = result?.scenario === "directory" ? directoryValid : chapterContent.trim().length > 0;
   const bindingMatches = Boolean(job.id
     && result.projectId === observation.plan?.projectId
     && result.targetId === observation.plan?.targetId
-    && observation.projectId === observation.plan?.projectId
-    && observation.scenario === result.scenario
+    && observation.plan?.scenario === result.scenario
     && observation.plan?.actorUserId === expected.actorUserId
     && job.projectId === observation.plan?.projectId
     && job.targetId === observation.plan?.targetId
@@ -55,7 +59,8 @@ async function evaluateResult(result, fallback = {}) {
     { checkId: "request-contract", label: "生成请求方法、路径与响应", status: requestEvidence.value ? (requestEvidence.value.status == null ? "unknown" : requestEvidence.value.method === "POST" && requestEvidence.value.path === observation.plan?.requestPath && requestEvidence.value.status === 200 ? "pass" : "fail") : "unknown", expected: `POST ${observation.plan?.requestPath || "<planned path>"} -> 200`, observed: requestEvidence.value ? `${requestEvidence.value.method} ${requestEvidence.value.path} -> ${requestEvidence.value.status ?? "unknown"}` : null, reasonCode: requestEvidence.value?.status == null ? "REQUEST_HTTP_STATUS_UNKNOWN" : null, evidenceRefs: [requestEvidence.ref].filter(Boolean) },
     { checkId: "new-job-binding", label: "新 job 与项目、目标、类型和执行人一致", status: !job.id || !beforeJobsKnown ? "unknown" : (!preparedJobs.value.some((item) => item.id === job.id) && bindingMatches ? "pass" : "fail"), expected: "new job absent before trigger and all plan bindings match", observed: job.id || null, reasonCode: beforeJobsKnown ? null : "BEFORE_JOB_SET_UNAVAILABLE", evidenceRefs: [preparedJobs.ref, observation.jobEvidenceRef].filter(Boolean) },
     { checkId: "job-completed", label: "后台生成任务完成", status: !terminal || !job.finishedAt ? "unknown" : job.status === "succeeded" ? "pass" : "fail", expected: "terminal job.status = succeeded and finishedAt exists", observed: job.status ? `${job.status} / ${job.finishedAt || "unfinished"}` : null, reasonCode: observation.reason || null, evidenceRefs: observation.jobEvidenceRef ? [observation.jobEvidenceRef] : [] },
-    { checkId: "artifact-exists", label: "生成产物可读", status: !artifactRef ? "unknown" : artifactPresent && artifactDocument ? "pass" : "fail", expected: "artifact evidence exists and parses", observed: artifactPresent && Boolean(artifactDocument), reasonCode: artifactRef ? null : "ARTIFACT_REF_MISSING", evidenceRefs: artifactRef ? [artifactRef] : [] },
+    { checkId: "artifact-exists", label: "生成产物可读", status: !artifactRef || !artifactPresent ? "unknown" : artifactDocument ? "pass" : "fail", expected: "artifact evidence exists and parses", observed: artifactPresent && Boolean(artifactDocument), reasonCode: !artifactRef ? "ARTIFACT_REF_MISSING" : !artifactPresent ? "ARTIFACT_EVIDENCE_UNAVAILABLE" : artifactDocument ? null : "ARTIFACT_JSON_INVALID", evidenceRefs: artifactRef ? [artifactRef] : [] },
+    { checkId: "artifact-binding", label: "生成产物归属当前项目与目标", status: !artifactDocument ? "unknown" : artifactBindingMatches ? "pass" : "fail", expected: result?.scenario === "directory" ? "artifact project and every chapter businessLine match the plan" : "artifact project and exact target chapter match the plan", observed: artifactDocument ? `${artifactDocument.id || "unknown"} / ${result?.scenario === "directory" ? [...new Set((chapters || []).map((item) => item.businessLine || "unknown"))].join(",") : targetChapter?.id || "target missing"}` : null, reasonCode: !artifactDocument ? "ARTIFACT_DOCUMENT_UNAVAILABLE" : artifactBindingMatches ? null : "ARTIFACT_BINDING_MISMATCH", evidenceRefs: artifactRef ? [artifactRef] : [] },
     { checkId: "artifact-non-empty", label: result?.scenario === "directory" ? "目录结构非空" : "正文内容非空", status: !artifactDocument ? "unknown" : nonEmpty ? "pass" : "fail", expected: result?.scenario === "directory" ? "artifact chapters contain id/title and are non-empty" : "bound target chapter contains non-empty content", observed: result?.scenario === "directory" ? (chapters?.length ?? null) : (chapterContent ? Buffer.byteLength(chapterContent, "utf8") : 0), reasonCode: nonEmpty ? null : "EMPTY_OR_UNOBSERVED_ARTIFACT", evidenceRefs: artifactRef ? [artifactRef] : [] },
   ];
   return checks;
