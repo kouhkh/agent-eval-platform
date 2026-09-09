@@ -435,6 +435,11 @@ test("serves the independent control-plane console without an application fronte
     const page = await pageResponse.text();
     assert.match(page, /评测控制台/);
     assert.match(page, /\/console\.js/);
+    assert.match(page, /\/evaluation-console\.svg/);
+    assert.match(page, /——刘天赐开发/);
+    const iconResponse = await fetch(`${item.baseUrl}/evaluation-console.svg`);
+    assert.equal(iconResponse.status, 200);
+    assert.match(iconResponse.headers.get("content-type"), /image\/svg\+xml/);
 
     const scriptResponse = await fetch(`${item.baseUrl}/console.js`);
     assert.equal(scriptResponse.status, 200);
@@ -446,6 +451,47 @@ test("serves the independent control-plane console without an application fronte
     assert.match(script, /runRequestErrors\.set/);
     assert.match(script, /执行请求状态未确认/);
   } finally { await closeService(item); }
+});
+
+test("PinAsk annotations queue a fixed-workspace HITL job without trusting a client workspace", async () => {
+  const annotation = { question: "把这个按钮改成紫色", ui_elements: [{ selector: "#save", tag: "button", name: "保存" }], scene: { href: "http://127.0.0.1:4373/" }, source: "agent-eval-console" };
+  let savedAnnotation = null;
+  const pinAsk = createServer(async (request, response) => {
+    const chunks = []; for await (const chunk of request) chunks.push(chunk);
+    response.setHeader("content-type", request.url.endsWith(".js") ? "text/javascript" : request.url.endsWith(".css") ? "text/css" : "application/json");
+    if (request.url === "/overlay/pinask.js") response.end("window.PinAsk={mount(){},setOn(){}};");
+    else if (request.url === "/overlay/pinask.css") response.end("#pinask-root{position:fixed}");
+    else if (request.method === "GET" && request.url.startsWith("/api/pinask")) response.end(JSON.stringify({ ok: true, items: [] }));
+    else if (request.method === "POST" && request.url === "/api/pinask") { savedAnnotation = JSON.parse(Buffer.concat(chunks).toString("utf8")); response.end(JSON.stringify({ ok: true, item: { ...savedAnnotation, id: "pq_fixed" } })); }
+    else { response.statusCode = 404; response.end("{}"); }
+  });
+  let dshSubmission = null;
+  const job = { id: "22222222-2222-4222-8222-222222222222", kind: "hitl-ui-change", status: "queued", createdAt: new Date().toISOString(), question: annotation.question };
+  const dsh = createServer(async (request, response) => {
+    const chunks = []; for await (const chunk of request) chunks.push(chunk);
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/api/health") response.end(JSON.stringify({ ok: true, ready: true }));
+    else if (request.method === "POST" && request.url === "/api/hitl-ui-changes") { dshSubmission = JSON.parse(Buffer.concat(chunks).toString("utf8")); response.statusCode = 202; response.end(JSON.stringify({ job })); }
+    else if (request.method === "GET" && request.url.startsWith("/api/jobs?")) response.end(JSON.stringify({ jobs: [job] }));
+    else { response.statusCode = 404; response.end("{}"); }
+  });
+  await Promise.all([new Promise((resolve) => pinAsk.listen(0, "127.0.0.1", resolve)), new Promise((resolve) => dsh.listen(0, "127.0.0.1", resolve))]);
+  const item = await serviceWithFake({ pinAskUrl: `http://127.0.0.1:${pinAsk.address().port}`, dshBridgeUrl: `http://127.0.0.1:${dsh.address().port}`, hitlWorkspace: "/fixed/eval-console" });
+  try {
+    assert.equal((await fetch(`${item.baseUrl}/pinask/overlay.js`)).status, 200);
+    assert.equal((await fetch(`${item.baseUrl}/api/hitl-ui/health`).then((value) => value.json())).ok, true);
+    const response = await fetch(`${item.baseUrl}/api/hitl-ui/submit`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...annotation, workspace: "/client/must-not-control" }) });
+    assert.equal(response.status, 202);
+    assert.equal((await response.json()).job.id, job.id);
+    assert.equal(savedAnnotation.workspace, "/client/must-not-control", "PinAsk preserves the original annotation snapshot");
+    assert.equal(dshSubmission.workspace, "/fixed/eval-console");
+    assert.equal(dshSubmission.annotation.id, "pq_fixed");
+    assert.equal(dshSubmission.annotation.question, annotation.question);
+    assert.deepEqual((await fetch(`${item.baseUrl}/api/hitl-ui/jobs`).then((value) => value.json())).jobs, [job]);
+  } finally {
+    await closeService(item);
+    await Promise.all([new Promise((resolve) => pinAsk.close(resolve)), new Promise((resolve) => dsh.close(resolve))]);
+  }
 });
 
 test("control plane proxies read-only DSH proposals and persists human review", async () => {

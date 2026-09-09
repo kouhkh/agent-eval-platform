@@ -15,6 +15,7 @@ const CONSOLE_ASSETS = new Map([
   ["/", { file: "index.html", type: "text/html; charset=utf-8" }],
   ["/console.js", { file: "console.js", type: "text/javascript; charset=utf-8" }],
   ["/console.css", { file: "console.css", type: "text/css; charset=utf-8" }],
+  ["/evaluation-console.svg", { file: "evaluation-console.svg", type: "image/svg+xml" }],
 ]);
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
@@ -99,6 +100,8 @@ export function createBrowserService(options = {}) {
     adapter: options.externalCheckAdapter,
   });
   const dshBridgeUrl = options.dshBridgeUrl || process.env.AGENT_EVAL_DSH_URL || null;
+  const pinAskUrl = options.pinAskUrl || process.env.AGENT_EVAL_PINASK_URL || null;
+  const hitlWorkspace = options.hitlWorkspace || process.env.AGENT_EVAL_HITL_WORKSPACE || null;
   const dshRequest = async (pathname, init = {}) => {
     if (!dshBridgeUrl) throw new BrowserRunnerError("DSH_NOT_CONFIGURED", "DSH 服务尚未配置。", { statusCode: 503, phase: "dsh-bridge" });
     let response;
@@ -110,6 +113,13 @@ export function createBrowserService(options = {}) {
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new BrowserRunnerError("DSH_REQUEST_FAILED", payload?.error?.message || payload?.message || (typeof payload?.error === "string" ? payload.error : "DSH 请求失败。"), { statusCode: response.status, phase: "dsh-bridge" });
     return payload;
+  };
+  const pinAskRequest = async (pathname, init = {}) => {
+    if (!pinAskUrl) throw new BrowserRunnerError("PINASK_NOT_CONFIGURED", "PinAsk 服务尚未配置。", { statusCode: 503, phase: "pinask" });
+    let response;
+    try { response = await fetch(new URL(pathname, pinAskUrl), { ...init, signal: AbortSignal.timeout(init.timeoutMs || 5_000), headers: { ...init.headers } }); }
+    catch (error) { throw new BrowserRunnerError("PINASK_UNREACHABLE", "暂时无法连接 PinAsk 服务。", { statusCode: 503, phase: "pinask", details: { cause: error?.name || "network" } }); }
+    return response;
   };
   const integrations = Array.isArray(options.integrations) ? options.integrations.map((item) => ({
     id: String(item.id || ""),
@@ -126,6 +136,15 @@ export function createBrowserService(options = {}) {
         const asset = CONSOLE_ASSETS.get(url.pathname);
         const body = await readFile(path.join(HERE, "public", asset.file));
         response.writeHead(200, { "content-type": asset.type, "content-length": body.length, "cache-control": "no-store", "x-content-type-options": "nosniff" });
+        response.end(body);
+        return;
+      }
+      if (request.method === "GET" && ["/pinask/overlay.js", "/pinask/overlay.css"].includes(url.pathname)) {
+        const upstreamPath = url.pathname.endsWith(".js") ? "/overlay/pinask.js" : "/overlay/pinask.css";
+        const upstream = await pinAskRequest(upstreamPath);
+        if (!upstream.ok) throw new BrowserRunnerError("PINASK_ASSET_FAILED", "PinAsk 界面资源加载失败。", { statusCode: 502, phase: "pinask" });
+        const body = Buffer.from(await upstream.arrayBuffer());
+        response.writeHead(200, { "content-type": upstreamPath.endsWith(".js") ? "text/javascript; charset=utf-8" : "text/css; charset=utf-8", "content-length": body.length, "cache-control": "no-store", "x-content-type-options": "nosniff" });
         response.end(body);
         return;
       }
@@ -182,6 +201,37 @@ export function createBrowserService(options = {}) {
           return;
         }
       }
+      if (parts[0] === "api" && parts[1] === "hitl-ui") {
+        const resource = parts[2];
+        const jobId = parts[3];
+        const action = parts[4];
+        if (request.method === "GET" && resource === "health") {
+          const [pinAskHealth, dshHealth] = await Promise.all([
+            pinAskRequest("/api/pinask?status=open").then((value) => value.ok),
+            dshRequest("/api/health"),
+          ]);
+          sendJson(response, 200, { ok: pinAskHealth && dshHealth.ready === true, pinAskReady: pinAskHealth, dshReady: dshHealth.ready === true });
+          return;
+        }
+        if (request.method === "GET" && resource === "jobs" && !jobId) { sendJson(response, 200, await dshRequest(`/api/jobs?kind=hitl-ui-change&limit=${Math.min(100, Number(url.searchParams.get("limit")) || 50)}`)); return; }
+        if (request.method === "GET" && resource === "jobs" && jobId && !action) { sendJson(response, 200, await dshRequest(`/api/jobs/${encodeURIComponent(jobId)}`)); return; }
+        if (request.method === "POST" && resource === "jobs" && jobId && action === "actions") {
+          const body = await readJson(request);
+          sendJson(response, 202, await dshRequest(`/api/jobs/${encodeURIComponent(jobId)}/actions`, { method: "POST", body: JSON.stringify(body) }));
+          return;
+        }
+        if (request.method === "POST" && resource === "submit") {
+          if (!hitlWorkspace) throw new BrowserRunnerError("HITL_WORKSPACE_NOT_CONFIGURED", "当前评测前端工作区尚未配置。", { statusCode: 503, phase: "hitl-ui" });
+          const annotation = await readJson(request);
+          if (!String(annotation.question || "").trim() || !Array.isArray(annotation.ui_elements) || annotation.ui_elements.length === 0) throw new BrowserRunnerError("INVALID_HITL_ANNOTATION", "请先选择界面元素并填写修改意见。", { statusCode: 422, phase: "hitl-ui" });
+          const savedResponse = await pinAskRequest("/api/pinask", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(annotation) });
+          const saved = await savedResponse.json().catch(() => ({}));
+          if (!savedResponse.ok || !saved.item) throw new BrowserRunnerError("PINASK_SAVE_FAILED", saved.error || "PinAsk 标注保存失败。", { statusCode: savedResponse.status || 502, phase: "pinask" });
+          const queued = await dshRequest("/api/hitl-ui-changes", { method: "POST", body: JSON.stringify({ workspace: hitlWorkspace, annotation: saved.item }), timeoutMs: 15_000 });
+          sendJson(response, queued.deduplicated ? 200 : 202, { ...queued, annotation: { id: saved.item.id } });
+          return;
+        }
+      }
       if (request.method === "GET" && url.pathname === "/api/spec") {
         sendJson(response, 200, {
           service: "agent-eval-browser-runner",
@@ -204,6 +254,8 @@ export function createBrowserService(options = {}) {
             "POST /api/checks/:id/runs": "通过资产预绑定的白名单执行入口启动回归；不接受任意命令。",
             "GET|POST /api/test-proposals/jobs": "查看或启动 DSH 只读轨迹提案任务；不会应用代码。",
             "PATCH /api/test-proposals/jobs/:id/review": "把人工确认内容保存为控制平面测试资产。",
+            "POST /api/hitl-ui/submit": "保存 PinAsk 元素标注，并对服务端固定的当前评测前端工作区提交 DSH 修改任务。",
+            "GET /api/hitl-ui/jobs": "查看 PinAsk 界面修改任务状态与历史。",
           },
           response: { operationId: "string", sessionId: "string", tabId: "string", status: "succeeded|failed|cancelling", elapsedMs: "number", phase: "string", errorCode: "string|null", evidenceRefs: "string[]" },
           setupFixture: {
