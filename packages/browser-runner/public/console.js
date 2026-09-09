@@ -15,7 +15,7 @@ function isRunnable(testCase){return testCase.assetState==='runnable'&&(testCase
 const CHIP_MARKS={pass:'✓',fail:'✕',unknown:'○'};
 const CHIP_TONES=[['#e7f1fb','#bfd7f0'],['#e5f4ec','#bee0cf'],['#fdf2e0','#eedab1'],['#fdecef','#f1c9d1'],['#f1ebfb','#dbccf0'],['#e0f5f5','#bde3e3'],['#fcefe4','#f0d2b6'],['#fbf5da','#ede2a3'],['#e9ecfa','#cbd5ee'],['#fbe9f4','#eecfe0'],['#eff6e1','#d6e5b7'],['#eef0f4','#d8dce4']];
 function chipTones(checks){const tones=new Map();const labels=[...new Set(checks.flatMap(item=>{const results=item.latestRun?.checkResults||[],declared=item.objectiveChecks||[];return(results.length?results:declared.map(label=>({label,status:'unknown'}))).map(result=>String(result.label||result.checkId));}))].sort();labels.forEach((label,index)=>{const tone=CHIP_TONES[index%CHIP_TONES.length];tones.set(label,tone);});return tones;}
-function chipHtml(result,tones){const status=result.status||'unknown',label=result.label||result.checkId,tone=tones.get(String(label))||[];return`<span class="chip" style="${tone.length?`background:${tone[0]};border-color:${tone[1]}`:'background:#f5f6f9;border-color:#e4e6ec'}"><i class="chip-mark ${escapeHtml(status)}" aria-hidden="true">${CHIP_MARKS[status]||''}</i>${escapeHtml(label)}</span>`;}
+function chipHtml(result,tones){const status=result.status||'unknown',label=result.label||result.checkId,tone=tones.get(String(label))||[];return`<span class="chip" style="${tone.length?`background:${tone[0]};border-color:${tone[1]}`:'background:#f5f6f9;border-color:#e4e6ec'}">${escapeHtml(label)}</span>`;}
 
 function renderChecks(checks){
  const running=checks.filter(item=>['pending','running'].includes(item.latestRun?.executionStatus)).length,passed=checks.filter(item=>item.latestRun?.checkVerdict==='passed').length;
@@ -23,10 +23,20 @@ function renderChecks(checks){
  const tones=chipTones(checks);
  caseList.innerHTML=checks.map(item=>{
   const run=item.latestRun,active=Boolean(run&&['pending','running'].includes(run.executionStatus)),ready=Boolean(item.executor?.id)&&!active;
-  const results=run?.checkResults||[],declared=item.objectiveChecks||[],chips=(results.length?results:declared.map(label=>({label,status:'unknown'}))).map(result=>chipHtml(result,tones)).join('');
-  const itemsBody=chips?`<span class="check-item-chips"><span class="chip-cap">${results.length?'最近客观结果':'计划检查项'}</span>${chips}</span>`:'<span class="check-empty">还没有声明可自动判断的检查项</span>';
+  const results=run?.checkResults||[],declared=item.objectiveChecks||[];
+  const historyCount=item.history?.length||0;
+  const chipsOf=items=>items.map(result=>chipHtml(result,tones)).join('');
+  const resultRow=(status,label,items)=>items.length?`<span class="check-split-row ${status}"><i class="split-mark ${status}" aria-hidden="true">${CHIP_MARKS[status]||''}</i><span class="split-cap">${label}</span>${chipsOf(items)}</span>`:'';
+  let itemsBody;
+  if(results.length){
+   const unknown=results.filter(result=>result.status!=='pass'&&result.status!=='fail');
+   itemsBody=`<span class="check-split">${resultRow('pass','通过',results.filter(result=>result.status==='pass'))}${resultRow('fail','未通过',results.filter(result=>result.status==='fail'))}${resultRow('unknown','证据不足',unknown)}</span>`;
+  }else{
+   const chips=chipsOf(declared.map(label=>({label,status:'unknown'})));
+   itemsBody=chips?`<span class="check-item-chips"><span class="chip-cap">计划检查项</span>${chips}</span>`:'<span class="check-empty">还没有声明可自动判断的检查项</span>';
+  }
   const readiness=active?'执行中，暂不可重复启动':ready?'已就绪，可执行':'未就绪，执行器未绑定';
-  return`<button class="case-row check-row" type="button" data-check-id="${escapeHtml(item.id)}"><span class="check-head"><strong>${escapeHtml(item.title)}</strong><span class="run-state"><b class="run-status${active?' running':''}">运行脚本 · ${executionLabel(run)}</b><span class="pill ${statusClass(run)}">${verdictLabel(run)}</span><small>${readiness}</small></span><i class="arrow">›</i></span>${itemsBody}<span class="case-stats"><span><b>${item.history?.length||0}</b> 次历史</span><span>${time(run?.startedAt)}</span></span></button>`;
+  return`<button class="case-row check-row" type="button" data-check-id="${escapeHtml(item.id)}"><span class="check-head"><strong>${escapeHtml(item.title)}</strong><span class="run-state"><b class="run-status${active?' running':''}">${historyCount} 次历史 · ${run?.startedAt?`最近执行 ${time(run.startedAt)}`:executionLabel(run)}</b><span class="pill ${statusClass(run)}">${verdictLabel(run)}</span><small>${readiness}</small></span><i class="arrow">›</i></span>${itemsBody}</button>`;
  }).join('')||'<div class="notice">未加载固定检查适配器</div>';
  caseList.querySelectorAll('[data-check-id]').forEach(button=>button.addEventListener('click',()=>showCheck(button.dataset.checkId)));
 }

@@ -214,13 +214,14 @@ test("control-plane list refreshes fixed-check history after a run without a pag
     const page = service.manager.get(created.sessionId).page;
     const row = page.locator('[data-check-id="refresh-check"]');
     assert.equal(await row.locator(".case-icon").count(), 0);
-    assert.match(await row.textContent(), /运行脚本.*已就绪.*计划检查项.*声明检查项/s);
+    assert.match(await row.textContent(), /1 次历史.*已就绪.*计划检查项.*声明检查项/s);
     await page.locator('[data-check-id="refresh-check"]').click();
     await page.locator("#run").click();
     await page.locator("#back").click();
-    await page.locator('[data-check-id="refresh-check"] .case-stats').filter({ hasText: "2 次历史" }).waitFor({ state: "visible" });
+    await page.locator('[data-check-id="refresh-check"]').filter({ hasText: "2 次历史" }).waitFor({ state: "visible" });
     assert.match(await page.locator('[data-check-id="refresh-check"]').textContent(), /2026\/1\/2/);
-    assert.match(await page.locator('[data-check-id="refresh-check"]').textContent(), /最近客观结果.*产物可读/s);
+    assert.equal(await page.locator('[data-check-id="refresh-check"] .check-split-row.pass').count(), 1);
+    assert.match(await page.locator('[data-check-id="refresh-check"] .check-split-row.pass').textContent(), /通过.*产物可读/s);
   } finally {
     await service.manager.dispose();
     await new Promise((resolve) => service.server.close(resolve));
