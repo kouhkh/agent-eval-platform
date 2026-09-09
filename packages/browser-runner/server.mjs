@@ -8,6 +8,7 @@ import { PlaywrightRunner } from "./lib/browser-runner.mjs";
 import { BrowserRunnerError } from "./lib/operation-budget.mjs";
 import { SessionManager } from "./lib/session-manager.mjs";
 import { TestControlPlane } from "./lib/test-control-plane.mjs";
+import { ExternalCheckService } from "./lib/external-check-service.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CONSOLE_ASSETS = new Map([
@@ -93,6 +94,10 @@ export function createBrowserService(options = {}) {
     env: options.env,
     secretResolver: options.secretResolver,
   });
+  const externalChecks = options.externalChecks || new ExternalCheckService({
+    statePath: path.join(dataRoot, "external-check-runs.json"),
+    adapter: options.externalCheckAdapter,
+  });
   const integrations = Array.isArray(options.integrations) ? options.integrations.map((item) => ({
     id: String(item.id || ""),
     version: String(item.version || "0.1.0"),
@@ -134,6 +139,8 @@ export function createBrowserService(options = {}) {
             "GET /api/test-cases": "列出控制平面中的测试资产。",
             "POST /api/test-cases": "创建测试资产（setup/步骤/断言/环境/门禁策略）。",
             "POST /api/test-cases/:id/runs": "执行 runnable 测试资产；draft 或待补全资产会被阻断。",
+            "GET /api/checks": "列出外部适配器注册的固定回归检查及历史。",
+            "POST /api/checks/:id/runs": "通过资产预绑定的白名单执行入口启动回归；不接受任意命令。",
           },
           response: { operationId: "string", sessionId: "string", tabId: "string", status: "succeeded|failed|cancelling", elapsedMs: "number", phase: "string", errorCode: "string|null", evidenceRefs: "string[]" },
           setupFixture: {
@@ -216,6 +223,13 @@ export function createBrowserService(options = {}) {
           return;
         }
       }
+      if (parts[0] === "api" && parts[1] === "checks") {
+        const checkId = parts[2];
+        const action = parts[3];
+        if (request.method === "GET" && !checkId) { sendJson(response, 200, { checks: await externalChecks.list() }); return; }
+        if (request.method === "GET" && checkId && !action) { sendJson(response, 200, { check: await externalChecks.get(checkId) }); return; }
+        if (request.method === "POST" && checkId && action === "runs") { sendJson(response, 202, { run: await externalChecks.start(checkId) }); return; }
+      }
       sendJson(response, 404, { errorCode: "NOT_FOUND", error: { code: "NOT_FOUND", message: "没有对应的 API 路由。", phase: "router", retryable: false, details: null } });
     } catch (error) {
       const normalized = error instanceof BrowserRunnerError ? error : new BrowserRunnerError("SERVICE_ERROR", error instanceof Error ? error.message : String(error), { statusCode: 500, phase: "service" });
@@ -223,7 +237,7 @@ export function createBrowserService(options = {}) {
     }
   });
 
-  return { server, runner, manager, controlPlane, evidenceStore, integrations, dataRoot };
+  return { server, runner, manager, controlPlane, externalChecks, evidenceStore, integrations, dataRoot };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {

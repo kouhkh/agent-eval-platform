@@ -58,6 +58,9 @@ GET  /api/sessions/:id/trace
 GET  /api/test-cases
 POST /api/test-cases
 POST /api/test-cases/:id/runs
+GET  /api/checks
+GET  /api/checks/:id
+POST /api/checks/:id/runs
 ```
 
 操作成功和失败都返回包含 `operationId`、`sessionId`、`tabId`、`status`、`elapsedMs`、`phase`、`errorCode` 和 `evidenceRefs` 的统一 envelope。
@@ -103,6 +106,18 @@ CLI 通过 `AGENT_EVAL_URL` 指定服务地址；JSON 参数也可用 `@/absolut
 每次 run 固化 `caseVersion`、不含运行历史的 `caseSnapshot` 及其 SHA-256 摘要。主步骤执行状态由 `executionStatus` 表达；业务判定由 `businessVerdict` 单独表达。没有权威断言的成功重放返回 `status: "completed"`、`executionStatus: "completed"`、`businessVerdict: "not_evaluated"`，不能写成业务通过。含权威断言且断言全部成功时才保留兼容字段 `status: "passed"`。HTTP 对 `completed` 和 `passed` 都返回 200。
 
 `cleanup.steps` 与 setup 使用相同的通用操作结构，在主步骤完成或中断后运行。清理操作、证据、错误以及平台拥有 session 的关闭结果都保存在同一 run 的 `cleanup` 字段；清理失败会让兼容字段 `status` 为 `failed`，不会被吞掉。
+
+### 外部固定回归检查
+
+`/api/checks` 把固定回归资产、历史和执行状态放入控制平面，但核心服务不内置业务映射。部署时注册可信 adapter，每项资产预绑定 executor id 和参数；HTTP 请求不能传入 shell 命令。执行状态与检查结果分开，重启前未完成的记录标记为 `interrupted`，不自动重跑。导入历史保留原始任务时间和来源，不把导入时间冒充执行时间。
+
+本地固定回归演示是外部组合，需显式指向已有资产根目录：
+
+```sh
+AGENT_EVAL_FIXED_ROOT=/absolute/path/to/fixed-assets npm run start:fixed
+```
+
+`adapters/planora-fixed-regression.mjs` 是第一个外部配置/检查实例，不是平台核心对 Planora 的硬编码。它只判断基线绑定、请求证据、新 job 绑定、任务终态和产物存在/非空；目录覆盖范围和正文质量保留为待人工确认提案。
 
 ### 通用 setup fixture
 

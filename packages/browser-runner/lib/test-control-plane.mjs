@@ -33,6 +33,31 @@ function normalizedDraftIssues(input, existing = []) {
   });
 }
 
+function normalizeProposalMetadata(input, existing = {}) {
+  const source = input === undefined ? existing : input;
+  if (!source || typeof source !== "object") return {};
+  return Object.fromEntries(["kind", "proposalId", "proposalDigest", "packetDigest", "proposalRef", "provenanceRef"]
+    .filter((key) => source[key] != null).map((key) => [key, String(source[key]).slice(0, 1000)]));
+}
+
+function normalizeProvenance(input, existing = {}) {
+  const source = input === undefined ? existing : input;
+  if (!source || typeof source !== "object") return {};
+  return {
+    sourceEventRefs: Array.isArray(source.sourceEventRefs) ? source.sourceEventRefs.map(String).slice(0, 500) : [],
+    ...(source.packetDigest == null ? {} : { packetDigest: String(source.packetDigest).slice(0, 256) }),
+    ...(source.inputDigest == null ? {} : { inputDigest: String(source.inputDigest).slice(0, 256) }),
+    ...(source.adapterDigest == null ? {} : { adapterDigest: String(source.adapterDigest).slice(0, 256) }),
+  };
+}
+
+function normalizeHumanConfirmation(input, existing = {}) {
+  const source = input === undefined ? existing : input;
+  const status = String(source?.status || "pending");
+  if (!["pending", "confirmed", "rejected"].includes(status)) throw new BrowserRunnerError("INVALID_CONFIRMATION_STATUS", "humanConfirmation.status 不合法。", { statusCode: 422, phase: "control-plane" });
+  return { status, questions: Array.isArray(source?.questions) ? source.questions.map(String).slice(0, 200) : [] };
+}
+
 function caseSnapshot(testCase) {
   const { runs: _runs, ...asset } = testCase;
   return jsonClone(asset);
@@ -82,6 +107,7 @@ async function executeOperationStep(step, options) {
 
 function normalizeCase(input = {}, existing = {}) {
   const steps = normalizeTestSteps(input.steps, existing.steps);
+  const draftIssues = normalizedDraftIssues(input.draftIssues, existing.draftIssues);
   const assertions = Array.isArray(input.assertions) ? input.assertions.filter((item) => item && typeof item === "object").slice(0, 200) : (existing.assertions || []);
   const policy = input.policy && typeof input.policy === "object" ? input.policy : (existing.policy || {});
   const assetState = String(input.assetState ?? existing.assetState ?? "runnable");
@@ -101,7 +127,10 @@ function normalizeCase(input = {}, existing = {}) {
     steps,
     assertions,
     assetState,
-    draftIssues: normalizedDraftIssues(input.draftIssues, existing.draftIssues),
+    draftIssues,
+    metadata: normalizeProposalMetadata(input.metadata, existing.metadata),
+    provenance: normalizeProvenance(input.provenance, existing.provenance),
+    humanConfirmation: normalizeHumanConfirmation(input.humanConfirmation ?? (input.metadata?.kind === "trace-proposal" ? { status: "pending", questions: draftIssues.filter((issue) => issue.code === "HUMAN_QUESTION").map((issue) => issue.message) } : undefined), existing.humanConfirmation),
     environment: normalizeEnvironment(input.environment, existing.environment),
     sourceRevision: String(input.sourceRevision ?? existing.sourceRevision ?? "").slice(0, 120),
     policy: {
@@ -150,7 +179,14 @@ export class TestControlPlane {
     await rename(tmp, this.statePath);
   }
 
-  async create(input) { await this.loadPromise; const value = normalizeCase(input); this.cases.set(value.id, value); await this.persist(); return value; }
+  async create(input) {
+    await this.loadPromise;
+    const value = normalizeCase(input);
+    if (this.cases.has(value.id)) throw new BrowserRunnerError("TEST_CASE_ALREADY_EXISTS", "同 ID 测试资产已存在；如需修改请使用 PATCH。", { statusCode: 409, phase: "control-plane" });
+    this.cases.set(value.id, value);
+    await this.persist();
+    return value;
+  }
 
   async get(id) { await this.loadPromise; const value = this.cases.get(String(id)); if (!value) throw new BrowserRunnerError("TEST_CASE_NOT_FOUND", "找不到指定测试用例。", { statusCode: 404, phase: "control-plane" }); return value; }
 
