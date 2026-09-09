@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -450,7 +451,57 @@ test("serves the independent control-plane console without an application fronte
     assert.match(script, /caseSnapshot/);
     assert.match(script, /runRequestErrors\.set/);
     assert.match(script, /执行请求状态未确认/);
+    assert.match(script, /data-hitl-action="retry"/);
   } finally { await closeService(item); }
+});
+
+test("trace catalog overlays analyzed sessions onto a complete system snapshot", async () => {
+  const fixtureRoot = await mkdtemp(path.join(tmpdir(), "agent-eval-trace-catalog-"));
+  const eventsPath = path.join(fixtureRoot, "events.json");
+  const analysisPath = path.join(fixtureRoot, "analysis.json");
+  const manifestPath = path.join(fixtureRoot, "manifest.json");
+  const catalogPath = path.join(fixtureRoot, "index.json");
+  const events = [{ sessionId: "session-1", seq: 1, type: "click", route: "/fixture", target: { tag: "button" }, payload: {} }];
+  const analysis = { schemaVersion: 1, sourceSessionId: "session-1", sourceRevision: "abc", analyzedAt: "2026-01-02T00:00:00.000Z", analyzer: { kind: "codex", analysisVersion: "v1" }, summary: "fixture analysis", segments: [], facts: [], inferences: [], unknowns: [], prerequisites: [] };
+  await writeFile(eventsPath, JSON.stringify(events, null, 2));
+  await writeFile(analysisPath, JSON.stringify(analysis, null, 2));
+  await writeFile(manifestPath, JSON.stringify({ schemaVersion: "system-trace-snapshot.v1", snapshotAt: "2026-01-03T00:00:00.000Z", sourceRevision: "def", complete: true, sessionCount: 2, eventCount: 2, browserInstanceIdColumnPresent: false, records: [
+    { sessionId: "session-1", startedAt: "2026-01-01T00:00:00.000Z", lastSeenAt: "2026-01-01T00:01:00.000Z", eventCount: 1, appRevision: "abc", eventTypes: { click: 1 }, eventsRef: eventsPath, eventsSha256: createHash("sha256").update(await readFile(eventsPath)).digest("hex") },
+    { sessionId: "session-2", startedAt: "2026-01-01T00:02:00.000Z", eventCount: 1, appRevision: "def", eventTypes: { scroll: 1 } },
+  ] }));
+  await writeFile(catalogPath, JSON.stringify({ schemaVersion: 1, generatedAt: "2026-01-02T00:00:00.000Z", items: [{ sourceSessionId: "session-1", title: "analyzed", summary: "fixture analysis", codexAnalysis: { status: "available", file: "analysis.json", sha256: createHash("sha256").update(JSON.stringify(analysis)).digest("hex") }, dshAnalysis: { status: "not-analyzed" } }], jointAnalyses: [] }, null, 2));
+  const item = await serviceWithFake({ traceCatalogPath: catalogPath, systemTraceManifestPath: manifestPath });
+  try {
+    const catalog = await fetch(`${item.baseUrl}/api/traces`).then((response) => response.json());
+    assert.equal(catalog.items.length, 2);
+    assert.equal(catalog.items[0].codexAnalysis.status, "available");
+    assert.equal(catalog.items[1].codexAnalysis.status, "not-analyzed");
+    assert.equal(catalog.manualRecording.status, "empty");
+    const detail = await fetch(`${item.baseUrl}/api/traces/session-1`).then((response) => response.json());
+    assert.equal(detail.codexAnalysis.summary, "fixture analysis");
+    assert.equal(detail.events[0].type, "click");
+    assert.deepEqual(detail.eventWindow, { returned: 1, total: 1, truncated: false });
+  } finally { await closeService(item); await rm(fixtureRoot, { recursive: true, force: true }); }
+});
+
+test("HITL retry proxy keeps the original failed job id", async () => {
+  const job = { id: "44444444-4444-4444-8444-444444444444", kind: "hitl-ui-change", status: "failed" };
+  let action = null;
+  const dsh = createServer(async (request, response) => {
+    const chunks = []; for await (const chunk of request) chunks.push(chunk);
+    response.setHeader("content-type", "application/json");
+    if (request.method === "POST" && request.url === `/api/jobs/${job.id}/actions`) { action = JSON.parse(Buffer.concat(chunks).toString("utf8")); job.status = "queued"; response.statusCode = 202; response.end(JSON.stringify({ job })); }
+    else if (request.url === "/api/health") response.end(JSON.stringify({ ready: true }));
+    else { response.statusCode = 404; response.end("{}"); }
+  });
+  await new Promise((resolve) => dsh.listen(0, "127.0.0.1", resolve));
+  const item = await serviceWithFake({ dshBridgeUrl: `http://127.0.0.1:${dsh.address().port}` });
+  try {
+    const response = await fetch(`${item.baseUrl}/api/hitl-ui/jobs/${job.id}/actions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "retry" }) });
+    assert.equal(response.status, 202);
+    assert.deepEqual(action, { action: "retry" });
+    assert.equal((await response.json()).job.id, job.id);
+  } finally { await closeService(item); await new Promise((resolve) => dsh.close(resolve)); }
 });
 
 test("PinAsk annotations queue a fixed-workspace HITL job without trusting a client workspace", async () => {

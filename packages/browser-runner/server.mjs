@@ -1,5 +1,5 @@
 import http from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -102,6 +102,28 @@ export function createBrowserService(options = {}) {
   const dshBridgeUrl = options.dshBridgeUrl || process.env.AGENT_EVAL_DSH_URL || null;
   const pinAskUrl = options.pinAskUrl || process.env.AGENT_EVAL_PINASK_URL || null;
   const hitlWorkspace = options.hitlWorkspace || process.env.AGENT_EVAL_HITL_WORKSPACE || null;
+  const traceCatalogPath = options.traceCatalogPath || process.env.AGENT_EVAL_TRACE_CATALOG_PATH || null;
+  const systemTraceManifestPath = options.systemTraceManifestPath || process.env.AGENT_EVAL_SYSTEM_TRACE_MANIFEST_PATH || null;
+  const readTraceCatalog = async () => {
+    const analysisCatalog = traceCatalogPath ? JSON.parse(await readFile(traceCatalogPath, "utf8")) : { schemaVersion: 1, items: [], jointAnalyses: [] };
+    if (analysisCatalog.schemaVersion !== 1 || !Array.isArray(analysisCatalog.items)) throw new BrowserRunnerError("TRACE_CATALOG_INVALID", "系统轨迹分析目录格式不受支持。", { statusCode: 502, phase: "trace-catalog" });
+    const analyses = new Map(analysisCatalog.items.map((item) => [item.sourceSessionId, item]));
+    if (!systemTraceManifestPath) return { ...analysisCatalog, snapshotAt: analysisCatalog.generatedAt || null, complete: null, manualRecording: { status: "empty", message: "暂无人工录制轨迹" } };
+    const manifest = JSON.parse(await readFile(systemTraceManifestPath, "utf8"));
+    if (manifest.schemaVersion !== "system-trace-snapshot.v1" || !Array.isArray(manifest.records)) throw new BrowserRunnerError("SYSTEM_TRACE_MANIFEST_INVALID", "系统轨迹快照格式不受支持。", { statusCode: 502, phase: "trace-catalog" });
+    const items = manifest.records.map((record) => {
+      const analysis = analyses.get(record.sessionId);
+      return {
+        sourceKind: "system-telemetry", sourceSessionId: record.sessionId, sourceRevision: record.appRevision || manifest.sourceRevision || null,
+        startedAt: record.startedAt, lastSeenAt: record.lastSeenAt, eventCount: record.eventCount, eventTypes: record.eventTypes || {},
+        entryPath: record.entryPath, lastPath: record.lastPath, hasObservedError: record.hasObservedError === true, businessOutcome: "unknown",
+        eventsRef: record.eventsRef, eventsSha256: record.eventsSha256,
+        title: analysis?.title || "系统采集轨迹", summary: analysis?.summary || "尚未分析；当前只展示已脱敏的操作记录，不判定业务成功或失败。",
+        codexAnalysis: analysis?.codexAnalysis || { status: "not-analyzed" }, dshAnalysis: analysis?.dshAnalysis || { status: "not-analyzed" },
+      };
+    });
+    return { schemaVersion: 1, generatedAt: analysisCatalog.generatedAt || null, snapshotAt: manifest.snapshotAt, sourceRevision: manifest.sourceRevision, complete: manifest.complete === true, sessionCount: manifest.sessionCount, eventCount: manifest.eventCount, browserInstanceIdColumnPresent: manifest.browserInstanceIdColumnPresent === true, items, jointAnalyses: analysisCatalog.jointAnalyses || [], manualRecording: { status: "empty", message: "暂无人工录制轨迹" } };
+  };
   const dshRequest = async (pathname, init = {}) => {
     if (!dshBridgeUrl) throw new BrowserRunnerError("DSH_NOT_CONFIGURED", "DSH 服务尚未配置。", { statusCode: 503, phase: "dsh-bridge" });
     let response;
@@ -152,6 +174,38 @@ export function createBrowserService(options = {}) {
         const health = await runner.health();
         sendJson(response, 200, { ok: true, service: "agent-eval-browser-runner", mode: "dev", runner: health, sessionCount: manager.list().length, sessions: manager.list().map((item) => ({ sessionId: item.sessionId, tabId: item.tabId, state: item.state })) });
         return;
+      }
+      if (parts[0] === "api" && parts[1] === "traces") {
+        const sourceSessionId = parts[2];
+        const catalog = await readTraceCatalog();
+        if (request.method === "GET" && !sourceSessionId) { sendJson(response, 200, catalog); return; }
+        if (request.method === "GET" && sourceSessionId) {
+          const item = catalog.items.find((entry) => entry.sourceSessionId === sourceSessionId);
+          if (!item) throw new BrowserRunnerError("TRACE_NOT_FOUND", "轨迹不存在。", { statusCode: 404, phase: "trace-catalog" });
+          let codexAnalysis = null;
+          let events = [];
+          let totalEvents = Number(item.eventCount || 0);
+          if (item.eventsRef && systemTraceManifestPath) {
+            const snapshotDirectory = path.dirname(systemTraceManifestPath);
+            const eventsPath = path.resolve(item.eventsRef);
+            if (!eventsPath.startsWith(`${snapshotDirectory}${path.sep}`)) throw new BrowserRunnerError("TRACE_EVENTS_PATH_INVALID", "轨迹事件文件路径越界。", { statusCode: 502, phase: "trace-catalog" });
+            const eventsBody = await readFile(eventsPath);
+            if (item.eventsSha256 && createHash("sha256").update(eventsBody).digest("hex") !== item.eventsSha256) throw new BrowserRunnerError("TRACE_EVENTS_DIGEST_MISMATCH", "轨迹事件文件校验失败。", { statusCode: 502, phase: "trace-catalog" });
+            const parsedEvents = JSON.parse(eventsBody.toString("utf8"));
+            totalEvents = parsedEvents.length;
+            events = parsedEvents.slice(0, 300);
+          }
+          if (item.codexAnalysis?.status === "available" && item.codexAnalysis.file) {
+            const catalogDirectory = path.dirname(traceCatalogPath);
+            const analysisPath = path.resolve(catalogDirectory, item.codexAnalysis.file);
+            if (path.dirname(analysisPath) !== catalogDirectory) throw new BrowserRunnerError("TRACE_ANALYSIS_PATH_INVALID", "轨迹分析文件路径越界。", { statusCode: 502, phase: "trace-catalog" });
+            const body = await readFile(analysisPath);
+            codexAnalysis = JSON.parse(body.toString("utf8"));
+            if (item.codexAnalysis.sha256 && createHash("sha256").update(JSON.stringify(codexAnalysis)).digest("hex") !== item.codexAnalysis.sha256) throw new BrowserRunnerError("TRACE_ANALYSIS_DIGEST_MISMATCH", "轨迹分析文件校验失败。", { statusCode: 502, phase: "trace-catalog" });
+          }
+          sendJson(response, 200, { item, events, eventWindow: { returned: events.length, total: totalEvents, truncated: totalEvents > events.length }, codexAnalysis, jointAnalyses: catalog.jointAnalyses || [] });
+          return;
+        }
       }
       if (parts[0] === "api" && parts[1] === "test-proposals") {
         const resource = parts[2];
@@ -260,6 +314,8 @@ export function createBrowserService(options = {}) {
             "POST /api/test-cases": "创建测试资产（setup/步骤/断言/环境/门禁策略）。",
             "POST /api/test-cases/:id/runs": "执行 runnable 测试资产；draft 或待补全资产会被阻断。",
             "GET /api/checks": "列出外部适配器注册的固定回归检查及历史。",
+            "GET /api/traces": "列出已脱敏的系统轨迹与分析可用状态。",
+            "GET /api/traces/:sourceSessionId": "读取单条轨迹及通过摘要校验的 Codex 分析。",
             "POST /api/checks/:id/runs": "通过资产预绑定的白名单执行入口启动回归；不接受任意命令。",
             "GET|POST /api/test-proposals/jobs": "查看或启动 DSH 只读轨迹提案任务；不会应用代码。",
             "PATCH /api/test-proposals/jobs/:id/review": "把人工确认内容保存为控制平面测试资产。",
