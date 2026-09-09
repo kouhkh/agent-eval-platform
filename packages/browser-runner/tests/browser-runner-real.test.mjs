@@ -196,12 +196,12 @@ test("control-plane list refreshes fixed-check history after a run without a pag
   const root = await mkdtemp(path.join(tmpdir(), "agent-eval-console-refresh-"));
   const runner = new PlaywrightRunner({ headless: true, profileRoot: path.join(root, "profiles") });
   const history = [{ id: "old", executionStatus: "finished", checkVerdict: "passed", businessVerdict: "not_evaluated", startedAt: "2026-01-01T00:00:00.000Z", checkResults: [], evidenceRefs: [] }];
-  const check = () => ({ id: "refresh-check", title: "刷新检查", project: "fixture", purpose: "验证列表刷新", method: "fixture", basis: "fixture", baseline: { version: "v1", applicationRevision: "abc" }, proposedQualityChecks: [], history: structuredClone(history), latestRun: structuredClone(history.at(-1)) });
+  const check = () => ({ id: "refresh-check", title: "刷新检查", project: "fixture", purpose: "验证列表刷新", method: "fixture", basis: "fixture", baseline: { version: "v1", applicationRevision: "abc" }, executor: { id: "fixture-runner", argument: "refresh" }, objectiveChecks: ["声明检查项"], proposedQualityChecks: [], history: structuredClone(history), latestRun: structuredClone(history.at(-1)) });
   const externalChecks = {
     list: async () => [check()],
     get: async () => check(),
     start: async () => {
-      const run = { id: "new", executionStatus: "finished", checkVerdict: "passed", businessVerdict: "not_evaluated", startedAt: "2026-01-02T00:00:00.000Z", checkResults: [], evidenceRefs: [] };
+      const run = { id: "new", executionStatus: "finished", checkVerdict: "passed", businessVerdict: "not_evaluated", startedAt: "2026-01-02T00:00:00.000Z", checkResults: [{ status: "pass", label: "产物可读" }], evidenceRefs: [] };
       history.push(run);
       return structuredClone(run);
     },
@@ -212,11 +212,15 @@ test("control-plane list refreshes fixed-check history after a run without a pag
   try {
     const created = await service.manager.createSession({ url: baseUrl });
     const page = service.manager.get(created.sessionId).page;
+    const row = page.locator('[data-check-id="refresh-check"]');
+    assert.equal(await row.locator(".case-icon").count(), 0);
+    assert.match(await row.textContent(), /运行脚本.*已就绪.*计划检查项.*声明检查项/s);
     await page.locator('[data-check-id="refresh-check"]').click();
     await page.locator("#run").click();
     await page.locator("#back").click();
     await page.locator('[data-check-id="refresh-check"] .case-stats').filter({ hasText: "2 次历史" }).waitFor({ state: "visible" });
     assert.match(await page.locator('[data-check-id="refresh-check"]').textContent(), /2026\/1\/2/);
+    assert.match(await page.locator('[data-check-id="refresh-check"]').textContent(), /最近客观结果.*产物可读/s);
   } finally {
     await service.manager.dispose();
     await new Promise((resolve) => service.server.close(resolve));
