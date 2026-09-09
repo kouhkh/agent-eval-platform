@@ -104,6 +104,7 @@ export function createBrowserService(options = {}) {
   const hitlWorkspace = options.hitlWorkspace || process.env.AGENT_EVAL_HITL_WORKSPACE || null;
   const traceCatalogPath = options.traceCatalogPath || process.env.AGENT_EVAL_TRACE_CATALOG_PATH || null;
   const systemTraceManifestPath = options.systemTraceManifestPath || process.env.AGENT_EVAL_SYSTEM_TRACE_MANIFEST_PATH || null;
+  const publicTraceItem = ({ eventsRef: _eventsRef, eventsSha256: _eventsSha256, ...item }) => item;
   const readTraceCatalog = async () => {
     const analysisCatalog = traceCatalogPath ? JSON.parse(await readFile(traceCatalogPath, "utf8")) : { schemaVersion: 1, items: [], jointAnalyses: [] };
     if (analysisCatalog.schemaVersion !== 1 || !Array.isArray(analysisCatalog.items)) throw new BrowserRunnerError("TRACE_CATALOG_INVALID", "系统轨迹分析目录格式不受支持。", { statusCode: 502, phase: "trace-catalog" });
@@ -178,7 +179,7 @@ export function createBrowserService(options = {}) {
       if (parts[0] === "api" && parts[1] === "traces") {
         const sourceSessionId = parts[2];
         const catalog = await readTraceCatalog();
-        if (request.method === "GET" && !sourceSessionId) { sendJson(response, 200, catalog); return; }
+        if (request.method === "GET" && !sourceSessionId) { sendJson(response, 200, { ...catalog, items: catalog.items.map(publicTraceItem) }); return; }
         if (request.method === "GET" && sourceSessionId) {
           const item = catalog.items.find((entry) => entry.sourceSessionId === sourceSessionId);
           if (!item) throw new BrowserRunnerError("TRACE_NOT_FOUND", "轨迹不存在。", { statusCode: 404, phase: "trace-catalog" });
@@ -203,7 +204,7 @@ export function createBrowserService(options = {}) {
             codexAnalysis = JSON.parse(body.toString("utf8"));
             if (item.codexAnalysis.sha256 && createHash("sha256").update(JSON.stringify(codexAnalysis)).digest("hex") !== item.codexAnalysis.sha256) throw new BrowserRunnerError("TRACE_ANALYSIS_DIGEST_MISMATCH", "轨迹分析文件校验失败。", { statusCode: 502, phase: "trace-catalog" });
           }
-          sendJson(response, 200, { item, events, eventWindow: { returned: events.length, total: totalEvents, truncated: totalEvents > events.length }, codexAnalysis, jointAnalyses: catalog.jointAnalyses || [] });
+          sendJson(response, 200, { item: publicTraceItem(item), events, eventWindow: { returned: events.length, total: totalEvents, truncated: totalEvents > events.length }, codexAnalysis, jointAnalyses: catalog.jointAnalyses || [] });
           return;
         }
       }

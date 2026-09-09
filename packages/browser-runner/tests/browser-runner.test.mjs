@@ -476,10 +476,14 @@ test("trace catalog overlays analyzed sessions onto a complete system snapshot",
     assert.equal(catalog.items.length, 2);
     assert.equal(catalog.items[0].codexAnalysis.status, "available");
     assert.equal(catalog.items[1].codexAnalysis.status, "not-analyzed");
+    assert.equal("eventsRef" in catalog.items[0], false);
+    assert.equal("eventsSha256" in catalog.items[0], false);
     assert.equal(catalog.manualRecording.status, "empty");
     const detail = await fetch(`${item.baseUrl}/api/traces/session-1`).then((response) => response.json());
     assert.equal(detail.codexAnalysis.summary, "fixture analysis");
     assert.equal(detail.events[0].type, "click");
+    assert.equal("eventsRef" in detail.item, false);
+    assert.equal("eventsSha256" in detail.item, false);
     assert.deepEqual(detail.eventWindow, { returned: 1, total: 1, truncated: false });
   } finally { await closeService(item); await rm(fixtureRoot, { recursive: true, force: true }); }
 });
