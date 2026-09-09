@@ -257,10 +257,11 @@ test("write tasks reuse a bounded Git worktree slot and preserve their commits a
   const sessionRoot = path.join(isolatedRoot, "sessions");
   await mkdir(repository);
   await writeFile(path.join(repository, "screen.txt"), "baseline\n");
+  await writeFile(path.join(repository, "package.json"), JSON.stringify({ private: true, scripts: { test: "node -e \"process.exit(0)\"" } }, null, 2));
   await exec("git", ["init"], { cwd: repository });
   await exec("git", ["config", "user.name", "Test"], { cwd: repository });
   await exec("git", ["config", "user.email", "test@example.com"], { cwd: repository });
-  await exec("git", ["add", "screen.txt"], { cwd: repository });
+  await exec("git", ["add", "screen.txt", "package.json"], { cwd: repository });
   await exec("git", ["commit", "-m", "baseline"], { cwd: repository });
   let run = 0;
   const runner = async (input) => {
@@ -290,6 +291,7 @@ test("write tasks reuse a bounded Git worktree slot and preserve their commits a
     assert.equal(first.workspaceReuse.slotId, "slot-1");
     assert.equal(first.workspaceReuse.worktreeReused, false);
     assert.match(first.taskRef, /^refs\/dsh\/jobs\//);
+    assert.ok(first.hostVerification.checks.some((check) => check.label === "项目测试" && check.status === "passed"));
     assert.equal(run, 1, first.error);
     assert.equal((await readFile(path.join(repository, "screen.txt"), "utf8")), "change 1\n");
 

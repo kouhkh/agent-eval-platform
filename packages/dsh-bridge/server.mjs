@@ -469,8 +469,17 @@ async function runHostVerification(job, session) {
   };
   try {
     await run("补丁格式检查", "git", ["diff", "--check", `${job.taskBaseCommit || session.baselineCommit}..${job.taskCommit}`]);
-    if (existsSync(path.join(session.directory, "package.json"))) await run("TypeScript", "npm", ["run", "lint"]);
-    if (job.routing?.key === "complex-ui") await run("评测目录回归", "npm", ["run", "test:evaluation-regression"]);
+    const packagePath = path.join(session.directory, "package.json");
+    if (existsSync(packagePath)) {
+      const scripts = JSON.parse(readFileSync(packagePath, "utf8")).scripts || {};
+      const staticScript = ["lint", "typecheck", "check", "test:types"].find((name) => typeof scripts[name] === "string");
+      if (staticScript) await run("静态检查", "npm", ["run", staticScript]);
+      if (job.routing?.key === "complex-ui" && typeof scripts["test:evaluation-regression"] === "string") {
+        await run("评测目录回归", "npm", ["run", "test:evaluation-regression"]);
+      } else if (typeof scripts.test === "string") {
+        await run("项目测试", "npm", ["test"]);
+      }
+    }
     return { status: "passed", elapsedMs: Date.now() - startedAt, checks };
   } catch {
     return { status: "failed", elapsedMs: Date.now() - startedAt, checks };
