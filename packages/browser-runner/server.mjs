@@ -442,6 +442,19 @@ export function createBrowserService(options = {}) {
         }
         return;
       }
+      if (parts[0] === "api" && parts[1] === "check-groups" && parts.length === 4 && parts[3] === "start-request") {
+        const checks = await externalChecks.list();
+        const checkIds = checks.map((check) => check.id);
+        if (request.method === "POST") {
+          const body = await readJson(request);
+          sendJson(response, 201, { layout: await checkGroups.requestStart(parts[2], body.mode, checkIds) });
+          return;
+        }
+        if (request.method === "DELETE") {
+          sendJson(response, 200, { layout: await checkGroups.clearStartRequest(parts[2], checkIds) });
+          return;
+        }
+      }
       sendJson(response, 404, { errorCode: "NOT_FOUND", error: { code: "NOT_FOUND", message: "没有对应的 API 路由。", phase: "router", retryable: false, details: null } });
     } catch (error) {
       const normalized = error instanceof BrowserRunnerError ? error : new BrowserRunnerError("SERVICE_ERROR", error instanceof Error ? error.message : String(error), { statusCode: 500, phase: "service" });

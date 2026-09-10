@@ -475,15 +475,38 @@ test("check groups persist an exact external-check ordering and reject unsafe la
     const layout = { groups: [{ id: "onlyoffice", name: "OnlyOffice 实验", targetUrl: "http://127.0.0.1:3041", collapsed: true, checkIds: ["gamma", "alpha"] }], ungroupedCheckIds: ["beta"] };
     const saved = await fetch(`${item.baseUrl}/api/check-groups`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(layout) });
     assert.equal(saved.status, 200);
-    assert.deepEqual((await saved.json()).layout, { schemaVersion: 2, groups: [{ ...layout.groups[0], lastProbe: null }], ungroupedCheckIds: ["beta"] });
+    assert.deepEqual((await saved.json()).layout, { schemaVersion: 2, groups: [{ ...layout.groups[0], lastProbe: null, startRequest: null }], ungroupedCheckIds: ["beta"] });
     const persisted = JSON.parse(await readFile(path.join(item.root, "check-groups.json"), "utf8"));
-    assert.deepEqual(persisted, { schemaVersion: 2, groups: [{ ...layout.groups[0], lastProbe: null }], ungroupedCheckIds: ["beta"] });
+    assert.deepEqual(persisted, { schemaVersion: 2, groups: [{ ...layout.groups[0], lastProbe: null, startRequest: null }], ungroupedCheckIds: ["beta"] });
     const duplicate = await fetch(`${item.baseUrl}/api/check-groups`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ groups: [{ id: "duplicated", name: "重复", checkIds: ["alpha"] }], ungroupedCheckIds: ["alpha", "beta", "gamma"] }) });
     assert.equal(duplicate.status, 422);
     assert.equal((await duplicate.json()).errorCode, "CHECK_GROUP_DUPLICATE_CHECK");
     const unknown = await fetch(`${item.baseUrl}/api/check-groups`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ groups: [], ungroupedCheckIds: ["alpha", "beta", "unknown"] }) });
     assert.equal(unknown.status, 422);
     assert.equal((await unknown.json()).errorCode, "CHECK_GROUP_UNKNOWN_CHECK");
+  } finally { await closeService(item); }
+});
+
+test("group start assistance is a persisted request queue and never accepts a command", async () => {
+  const externalChecks = { list: async () => [{ id: "alpha" }], get: async () => ({ id: "alpha" }), start: async () => ({ id: "run" }) };
+  const item = await serviceWithFake({ externalChecks });
+  try {
+    const headers = { "content-type": "application/json" };
+    await fetch(`${item.baseUrl}/api/check-groups`, { method: "PUT", headers, body: JSON.stringify({ groups: [{ id: "local", name: "本机", checkIds: ["alpha"] }], ungroupedCheckIds: [] }) });
+    const created = await fetch(`${item.baseUrl}/api/check-groups/local/start-request`, { method: "POST", headers, body: JSON.stringify({ mode: "codex_session", command: "touch should-never-run" }) });
+    assert.equal(created.status, 201);
+    const body = await created.json();
+    assert.equal(body.layout.groups[0].startRequest.mode, "codex_session");
+    assert.equal(body.layout.groups[0].startRequest.status, "pending");
+    assert.match(body.layout.groups[0].startRequest.reason, /不会自行创建/);
+    assert.equal(JSON.stringify(body.layout.groups[0].startRequest).includes("touch should-never-run"), false);
+    const script = await fetch(`${item.baseUrl}/api/check-groups/local/start-request`, { method: "POST", headers, body: JSON.stringify({ mode: "managed_script" }) }).then((response) => response.json());
+    assert.equal(script.layout.groups[0].startRequest.status, "blocked");
+    const invalid = await fetch(`${item.baseUrl}/api/check-groups/local/start-request`, { method: "POST", headers, body: JSON.stringify({ mode: "shell" }) });
+    assert.equal(invalid.status, 422);
+    assert.equal((await invalid.json()).errorCode, "CHECK_GROUP_INVALID_START_MODE");
+    const cleared = await fetch(`${item.baseUrl}/api/check-groups/local/start-request`, { method: "DELETE" }).then((response) => response.json());
+    assert.equal(cleared.layout.groups[0].startRequest, null);
   } finally { await closeService(item); }
 });
 
@@ -540,10 +563,11 @@ test("serves the independent control-plane console without an application fronte
     assert.match(page, /\/evaluation-console\.svg/);
     assert.match(page, /——刘天赐开发/);
     const consoleScript = await fetch(`${item.baseUrl}/console.js`).then((response) => response.text());
-    assert.match(consoleScript, /data-rename-group/);
-    assert.match(consoleScript, /data-toggle-group/);
     assert.match(consoleScript, /data-move-group/);
     assert.match(consoleScript, /data-probe-group/);
+    assert.match(consoleScript, /data-group-name/);
+    assert.match(consoleScript, /data-start-request/);
+    assert.doesNotMatch(consoleScript, /data-rename-group/);
     const iconResponse = await fetch(`${item.baseUrl}/evaluation-console.svg`);
     assert.equal(iconResponse.status, 200);
     assert.match(iconResponse.headers.get("content-type"), /image\/svg\+xml/);

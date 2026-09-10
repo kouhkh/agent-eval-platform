@@ -7,6 +7,7 @@ const MAX_NAME_LENGTH = 80;
 const MAX_CHECKS = 10_000;
 const MAX_TARGET_URL_LENGTH = 512;
 const MAX_PROBE_ELAPSED_MS = 60_000;
+const START_MODES = new Set(["codex_session", "dsh_process", "managed_script"]);
 
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
 function layoutError(code, message) { return new BrowserRunnerError(code, message, { statusCode: 422, phase: "check-groups" }); }
@@ -35,7 +36,7 @@ function normalizeLastProbe(value, label) {
   if (value == null) return null;
   if (!value || typeof value !== "object" || Array.isArray(value)) throw layoutError("CHECK_GROUP_INVALID_PROBE", `${label}的探活记录格式无效。`);
   const status = text(value.status);
-  if (!["online", "offline", "unknown"].includes(status)) throw layoutError("CHECK_GROUP_INVALID_PROBE", `${label}的探活状态无效。`);
+  if (!["online", "offline", "error", "unknown"].includes(status)) throw layoutError("CHECK_GROUP_INVALID_PROBE", `${label}的探活状态无效。`);
   const checkedAt = text(value.checkedAt);
   if (!checkedAt || Number.isNaN(Date.parse(checkedAt))) throw layoutError("CHECK_GROUP_INVALID_PROBE", `${label}缺少有效探活时间。`);
   const elapsedMs = Number(value.elapsedMs);
@@ -45,6 +46,20 @@ function normalizeLastProbe(value, label) {
   const errorCode = value.errorCode == null ? null : text(value.errorCode);
   if (errorCode !== null && (!errorCode || errorCode.length > 100)) throw layoutError("CHECK_GROUP_INVALID_PROBE", `${label}的错误码无效。`);
   return { status, checkedAt: new Date(checkedAt).toISOString(), elapsedMs, httpStatus, errorCode };
+}
+
+function normalizeStartRequest(value, label) {
+  if (value == null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw layoutError("CHECK_GROUP_INVALID_START_REQUEST", `${label}的启动协助请求格式无效。`);
+  const mode = text(value.mode);
+  if (!START_MODES.has(mode)) throw layoutError("CHECK_GROUP_INVALID_START_MODE", `${label}的启动方式无效。`);
+  const status = text(value.status);
+  if (!["pending", "blocked", "completed", "cleared"].includes(status)) throw layoutError("CHECK_GROUP_INVALID_START_STATUS", `${label}的启动协助状态无效。`);
+  const requestedAt = text(value.requestedAt);
+  if (!requestedAt || Number.isNaN(Date.parse(requestedAt))) throw layoutError("CHECK_GROUP_INVALID_START_REQUEST", `${label}缺少有效请求时间。`);
+  const reason = value.reason == null ? null : text(value.reason);
+  if (reason !== null && reason.length > 500) throw layoutError("CHECK_GROUP_INVALID_START_REQUEST", `${label}的说明过长。`);
+  return { mode, status, requestedAt: new Date(requestedAt).toISOString(), reason };
 }
 
 function normalizeLayout(input, checkIds) {
@@ -70,6 +85,7 @@ function normalizeLayout(input, checkIds) {
       targetUrl: normalizeTargetUrl(group.targetUrl, `分组“${name}”`),
       collapsed: group.collapsed === true,
       lastProbe: normalizeLastProbe(group.lastProbe, `分组“${name}”`),
+      startRequest: normalizeStartRequest(group.startRequest, `分组“${name}”`),
       checkIds: group.checkIds.map((value) => normalizeId(value, `分组“${name}”中的检查项`)),
     };
   });
@@ -145,6 +161,47 @@ export class CheckGroupStore {
       const group = layout.groups.find((item) => item.id === id);
       if (!group) throw new BrowserRunnerError("CHECK_GROUP_NOT_FOUND", "没有对应的分组。", { statusCode: 404, phase: "check-groups" });
       group.lastProbe = lastProbe;
+      const normalized = normalizeLayout(layout, ids);
+      await this.writeLayout(normalized);
+      result = clone(normalized);
+    });
+    await this.persistChain;
+    return result;
+  }
+
+  async requestStart(groupId, mode, checkIds) {
+    const ids = [...new Set(checkIds.map((value) => normalizeId(value, "检查项")))];
+    const id = normalizeId(groupId, "分组");
+    const normalizedMode = text(mode);
+    if (!START_MODES.has(normalizedMode)) throw layoutError("CHECK_GROUP_INVALID_START_MODE", "启动协助方式只能是 Codex、DSH 或已登记脚本。");
+    let result;
+    this.persistChain = this.persistChain.catch(() => {}).then(async () => {
+      const layout = await this.readLayout(ids);
+      const group = layout.groups.find((item) => item.id === id);
+      if (!group) throw new BrowserRunnerError("CHECK_GROUP_NOT_FOUND", "没有对应的分组。", { statusCode: 404, phase: "check-groups" });
+      const reasons = {
+        codex_session: "等待桌面侧消费者创建 Codex 会话；控制台不会自行创建会话。",
+        dsh_process: "等待配置 DSH bridge；控制台不会自行启动 DSH 进程。",
+        managed_script: "未登记可运行的固定脚本 ID；控制台不会接收或执行 shell 命令。",
+      };
+      group.startRequest = { mode: normalizedMode, status: normalizedMode === "managed_script" ? "blocked" : "pending", requestedAt: new Date().toISOString(), reason: reasons[normalizedMode] };
+      const normalized = normalizeLayout(layout, ids);
+      await this.writeLayout(normalized);
+      result = clone(normalized);
+    });
+    await this.persistChain;
+    return result;
+  }
+
+  async clearStartRequest(groupId, checkIds) {
+    const ids = [...new Set(checkIds.map((value) => normalizeId(value, "检查项")))];
+    const id = normalizeId(groupId, "分组");
+    let result;
+    this.persistChain = this.persistChain.catch(() => {}).then(async () => {
+      const layout = await this.readLayout(ids);
+      const group = layout.groups.find((item) => item.id === id);
+      if (!group) throw new BrowserRunnerError("CHECK_GROUP_NOT_FOUND", "没有对应的分组。", { statusCode: 404, phase: "check-groups" });
+      group.startRequest = null;
       const normalized = normalizeLayout(layout, ids);
       await this.writeLayout(normalized);
       result = clone(normalized);

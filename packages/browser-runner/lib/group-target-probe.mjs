@@ -62,20 +62,22 @@ export async function probeGroupTarget(value, options = {}) {
         if (received >= MAX_RESPONSE_BYTES) response.destroy();
       });
       response.on("error", () => {});
-      const finishOnline = () => {
+      const finishResponse = () => {
         if (settled) return;
         settled = true;
-        resolve({ status: "online", checkedAt: startedAt, elapsedMs: Date.now() - started, httpStatus: response.statusCode || null });
+        const httpStatus = response.statusCode || null;
+        resolve({ status: httpStatus && httpStatus < 400 ? "online" : "error", checkedAt: startedAt, elapsedMs: Date.now() - started, httpStatus, errorCode: httpStatus && httpStatus >= 400 ? `HTTP_${httpStatus}` : null });
       };
-      response.on("end", finishOnline);
-      response.on("close", finishOnline);
+      response.on("end", finishResponse);
+      response.on("close", finishResponse);
       response.resume();
     });
     let settled = false;
     const finishOffline = (error) => {
       if (settled) return;
       settled = true;
-      resolve({ status: "offline", checkedAt: startedAt, elapsedMs: Date.now() - started, errorCode: error?.code || "NETWORK_ERROR" });
+      const code = error?.code || "NETWORK_ERROR";
+      resolve({ status: code === "ECONNREFUSED" ? "offline" : "error", checkedAt: startedAt, elapsedMs: Date.now() - started, errorCode: code });
     };
     request.once("error", finishOffline);
     request.once("timeout", () => { request.destroy(new Error("timeout")); });
