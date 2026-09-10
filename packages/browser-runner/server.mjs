@@ -10,6 +10,7 @@ import { SessionManager } from "./lib/session-manager.mjs";
 import { TestControlPlane } from "./lib/test-control-plane.mjs";
 import { ExternalCheckService } from "./lib/external-check-service.mjs";
 import { CheckGroupStore } from "./lib/check-group-store.mjs";
+import { probeGroupTarget } from "./lib/group-target-probe.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CONSOLE_ASSETS = new Map([
@@ -418,6 +419,14 @@ export function createBrowserService(options = {}) {
         const checkIds = checks.map((check) => check.id);
         if (request.method === "GET") { sendJson(response, 200, { layout: await checkGroups.get(checkIds) }); return; }
         if (request.method === "PUT") { sendJson(response, 200, { layout: await checkGroups.replace(await readJson(request), checkIds) }); return; }
+      }
+      if (parts[0] === "api" && parts[1] === "check-groups" && parts.length === 4 && parts[3] === "probe" && request.method === "POST") {
+        const checks = await externalChecks.list();
+        const layout = await checkGroups.get(checks.map((check) => check.id));
+        const group = layout.groups.find((item) => item.id === parts[2]);
+        if (!group) throw new BrowserRunnerError("CHECK_GROUP_NOT_FOUND", "没有对应的分组。", { statusCode: 404, phase: "check-groups" });
+        sendJson(response, 200, { targetUrl: group.targetUrl, probe: await probeGroupTarget(group.targetUrl) });
+        return;
       }
       sendJson(response, 404, { errorCode: "NOT_FOUND", error: { code: "NOT_FOUND", message: "没有对应的 API 路由。", phase: "router", retryable: false, details: null } });
     } catch (error) {

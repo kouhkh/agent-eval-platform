@@ -470,19 +470,45 @@ test("check groups persist an exact external-check ordering and reject unsafe la
   const item = await serviceWithFake({ externalChecks });
   try {
     const initial = await fetch(`${item.baseUrl}/api/check-groups`).then((response) => response.json());
-    assert.deepEqual(initial.layout, { schemaVersion: 1, groups: [], ungroupedCheckIds: ["alpha", "beta", "gamma"] });
-    const layout = { groups: [{ id: "onlyoffice", name: "OnlyOffice 实验", checkIds: ["gamma", "alpha"] }], ungroupedCheckIds: ["beta"] };
+    assert.deepEqual(initial.layout, { schemaVersion: 2, groups: [], ungroupedCheckIds: ["alpha", "beta", "gamma"] });
+    const layout = { groups: [{ id: "onlyoffice", name: "OnlyOffice 实验", targetUrl: "http://127.0.0.1:3041", collapsed: true, checkIds: ["gamma", "alpha"] }], ungroupedCheckIds: ["beta"] };
     const saved = await fetch(`${item.baseUrl}/api/check-groups`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(layout) });
     assert.equal(saved.status, 200);
-    assert.deepEqual((await saved.json()).layout, { schemaVersion: 1, ...layout });
+    assert.deepEqual((await saved.json()).layout, { schemaVersion: 2, ...layout });
     const persisted = JSON.parse(await readFile(path.join(item.root, "check-groups.json"), "utf8"));
-    assert.deepEqual(persisted, { schemaVersion: 1, ...layout });
+    assert.deepEqual(persisted, { schemaVersion: 2, ...layout });
     const duplicate = await fetch(`${item.baseUrl}/api/check-groups`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ groups: [{ id: "duplicated", name: "重复", checkIds: ["alpha"] }], ungroupedCheckIds: ["alpha", "beta", "gamma"] }) });
     assert.equal(duplicate.status, 422);
     assert.equal((await duplicate.json()).errorCode, "CHECK_GROUP_DUPLICATE_CHECK");
     const unknown = await fetch(`${item.baseUrl}/api/check-groups`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ groups: [], ungroupedCheckIds: ["alpha", "beta", "unknown"] }) });
     assert.equal(unknown.status, 422);
     assert.equal((await unknown.json()).errorCode, "CHECK_GROUP_UNKNOWN_CHECK");
+  } finally { await closeService(item); }
+});
+
+test("group target configuration persists, rejects credential URLs, and never probes non-loopback targets", async () => {
+  const externalChecks = { list: async () => [{ id: "alpha" }], get: async () => ({ id: "alpha" }), start: async () => ({ id: "run" }) };
+  const item = await serviceWithFake({ externalChecks });
+  try {
+    const headers = { "content-type": "application/json" };
+    const local = { groups: [{ id: "local", name: "本机", targetUrl: item.baseUrl, checkIds: ["alpha"] }], ungroupedCheckIds: [] };
+    const saved = await fetch(`${item.baseUrl}/api/check-groups`, { method: "PUT", headers, body: JSON.stringify(local) });
+    assert.equal(saved.status, 200);
+    const probe = await fetch(`${item.baseUrl}/api/check-groups/local/probe`, { method: "POST" }).then((response) => response.json());
+    assert.equal(probe.probe.status, "online");
+    assert.equal(probe.probe.httpStatus, 200);
+    assert.ok(probe.probe.checkedAt);
+
+    const credential = { groups: [{ id: "bad", name: "不安全", targetUrl: "http://user:secret@127.0.0.1:3041", checkIds: ["alpha"] }], ungroupedCheckIds: [] };
+    const rejected = await fetch(`${item.baseUrl}/api/check-groups`, { method: "PUT", headers, body: JSON.stringify(credential) });
+    assert.equal(rejected.status, 422);
+    assert.equal((await rejected.json()).errorCode, "CHECK_GROUP_INVALID_TARGET");
+
+    const remote = { groups: [{ id: "remote", name: "测试环境", targetUrl: "http://203.0.113.1:1234", checkIds: ["alpha"] }], ungroupedCheckIds: [] };
+    assert.equal((await fetch(`${item.baseUrl}/api/check-groups`, { method: "PUT", headers, body: JSON.stringify(remote) })).status, 200);
+    const forbidden = await fetch(`${item.baseUrl}/api/check-groups/remote/probe`, { method: "POST" });
+    assert.equal(forbidden.status, 403);
+    assert.equal((await forbidden.json()).errorCode, "CHECK_GROUP_TARGET_PROBE_FORBIDDEN");
   } finally { await closeService(item); }
 });
 
@@ -494,9 +520,16 @@ test("serves the independent control-plane console without an application fronte
     assert.match(pageResponse.headers.get("content-type"), /text\/html/);
     const page = await pageResponse.text();
     assert.match(page, /评测控制台/);
+    assert.doesNotMatch(page, /TEST CONTROL PLANE/);
+    assert.match(page, /示例角色/);
     assert.match(page, /\/console\.js/);
     assert.match(page, /\/evaluation-console\.svg/);
     assert.match(page, /——刘天赐开发/);
+    const consoleScript = await fetch(`${item.baseUrl}/console.js`).then((response) => response.text());
+    assert.match(consoleScript, /data-rename-group/);
+    assert.match(consoleScript, /data-toggle-group/);
+    assert.match(consoleScript, /data-move-group/);
+    assert.match(consoleScript, /data-probe-group/);
     const iconResponse = await fetch(`${item.baseUrl}/evaluation-console.svg`);
     assert.equal(iconResponse.status, 200);
     assert.match(iconResponse.headers.get("content-type"), /image\/svg\+xml/);

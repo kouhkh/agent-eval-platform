@@ -5,6 +5,7 @@ import { BrowserRunnerError } from "./operation-budget.mjs";
 const MAX_GROUPS = 100;
 const MAX_NAME_LENGTH = 80;
 const MAX_CHECKS = 10_000;
+const MAX_TARGET_URL_LENGTH = 512;
 
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
 function layoutError(code, message) { return new BrowserRunnerError(code, message, { statusCode: 422, phase: "check-groups" }); }
@@ -14,6 +15,19 @@ function normalizeId(value, label) {
   const id = text(value);
   if (!id || id.length > 200) throw layoutError("CHECK_GROUP_INVALID_ID", `${label} 缺少有效标识。`);
   return id;
+}
+
+function normalizeTargetUrl(value, label) {
+  const raw = text(value);
+  if (!raw) return null;
+  if (raw.length > MAX_TARGET_URL_LENGTH) throw layoutError("CHECK_GROUP_INVALID_TARGET", `${label}的目标地址不能超过 ${MAX_TARGET_URL_LENGTH} 个字符。`);
+  let parsed;
+  try { parsed = new URL(raw); }
+  catch { throw layoutError("CHECK_GROUP_INVALID_TARGET", `${label}的目标地址必须是完整的 http(s) 地址。`); }
+  if (!/^https?:$/.test(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw layoutError("CHECK_GROUP_INVALID_TARGET", `${label}的目标地址只能是无凭据、无查询参数的 http(s) 基础地址。`);
+  }
+  return parsed.href.replace(/\/$/, "");
 }
 
 function normalizeLayout(input, checkIds) {
@@ -33,7 +47,13 @@ function normalizeLayout(input, checkIds) {
     const name = text(group.name);
     if (!name || name.length > MAX_NAME_LENGTH) throw layoutError("CHECK_GROUP_INVALID_NAME", `分组名称不能为空且不能超过 ${MAX_NAME_LENGTH} 个字符。`);
     if (!Array.isArray(group.checkIds)) throw layoutError("CHECK_GROUP_INVALID_CHECKS", `分组“${name}”缺少检查项顺序。`);
-    return { id, name, checkIds: group.checkIds.map((value) => normalizeId(value, `分组“${name}”中的检查项`)) };
+    return {
+      id,
+      name,
+      targetUrl: normalizeTargetUrl(group.targetUrl, `分组“${name}”`),
+      collapsed: group.collapsed === true,
+      checkIds: group.checkIds.map((value) => normalizeId(value, `分组“${name}”中的检查项`)),
+    };
   });
   const normalizedUngrouped = ungroupedCheckIds.map((value) => normalizeId(value, "未分组检查项"));
   for (const checkId of [...normalizedGroups.flatMap((group) => group.checkIds), ...normalizedUngrouped]) {
@@ -43,10 +63,10 @@ function normalizeLayout(input, checkIds) {
   }
   if (allowed.size > MAX_CHECKS) throw layoutError("CHECK_GROUP_TOO_MANY_CHECKS", "当前检查项数量超过布局限制。");
   if (seenChecks.size !== allowed.size) throw layoutError("CHECK_GROUP_MISSING_CHECK", "每一个当前检查项必须恰好出现在一个分组或未分组区域。");
-  return { schemaVersion: 1, groups: normalizedGroups, ungroupedCheckIds: normalizedUngrouped };
+  return { schemaVersion: 2, groups: normalizedGroups, ungroupedCheckIds: normalizedUngrouped };
 }
 
-function defaultLayout(checkIds) { return { schemaVersion: 1, groups: [], ungroupedCheckIds: [...checkIds] }; }
+function defaultLayout(checkIds) { return { schemaVersion: 2, groups: [], ungroupedCheckIds: [...checkIds] }; }
 
 export class CheckGroupStore {
   constructor(options = {}) {
