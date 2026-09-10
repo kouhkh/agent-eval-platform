@@ -4,7 +4,7 @@
   "executor": {
     "id": "technical-spec-rewrite-regression-v1"
   },
-  "sourceRevision": "0ddf0fd63c95ae15231e86e86748c9a21486f717",
+  "sourceRevision": "6b30916e64ab7282a91d52925de10877676a911b",
   "sourceFiles": [
     {
       "id": "feishu",
@@ -584,5 +584,5 @@
       "deferredTargets": []
     }
   ],
-  "fixtureSha256": "d748e1092aae92380ebbdfc6f2edfd0274c0e23c1fc150276894ebf9722df9bf"
+  "fixtureSha256": "b1068061c603f3d248e42831efb161b1d3ed5d6c097bbe2ae6ff8ceff9940257"
 }

@@ -27,7 +27,7 @@ test("technical spec adapter loads frozen offline goldens without a product serv
   const asset = loaded.assets[0];
   assert.equal(asset.id, "technical-spec-rewrite-offline-goldens-v1");
   assert.equal(asset.assetState, "blocked");
-  assert.equal(asset.baseline.sourceRevision, "0ddf0fd63c95ae15231e86e86748c9a21486f717");
+  assert.equal(asset.baseline.sourceRevision, "6b30916e64ab7282a91d52925de10877676a911b");
   assert.equal(asset.baseline.fullDocumentSlots.length, 7);
   assert.equal(asset.baseline.fullDocumentEvidence.modelStage.r12.actualHttpCalls, 123);
   assert.equal(asset.baseline.fullDocumentEvidence.modelStage.r12.P2, 0);
