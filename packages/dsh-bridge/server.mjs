@@ -469,8 +469,17 @@ async function runHostVerification(job, session) {
   };
   try {
     await run("补丁格式检查", "git", ["diff", "--check", `${job.taskBaseCommit || session.baselineCommit}..${job.taskCommit}`]);
-    if (existsSync(path.join(session.directory, "package.json"))) await run("TypeScript", "npm", ["run", "lint"]);
-    if (job.routing?.key === "complex-ui") await run("评测目录回归", "npm", ["run", "test:evaluation-regression"]);
+    const packagePath = path.join(session.directory, "package.json");
+    if (existsSync(packagePath)) {
+      const scripts = JSON.parse(readFileSync(packagePath, "utf8")).scripts || {};
+      const staticScript = ["lint", "typecheck", "check", "test:types"].find((name) => typeof scripts[name] === "string");
+      if (staticScript) await run("静态检查", "npm", ["run", staticScript]);
+      if (job.routing?.key === "complex-ui" && typeof scripts["test:evaluation-regression"] === "string") {
+        await run("评测目录回归", "npm", ["run", "test:evaluation-regression"]);
+      } else if (typeof scripts.test === "string") {
+        await run("项目测试", "npm", ["test"]);
+      }
+    }
     return { status: "passed", elapsedMs: Date.now() - startedAt, checks };
   } catch {
     return { status: "failed", elapsedMs: Date.now() - startedAt, checks };
@@ -825,7 +834,7 @@ export function createAgentService(options = {}) {
             "POST /api/hitl-ui-changes": "接收 PinAsk 界面标注，限白名单工作区内由 DSH 修改 UI 源码。",
             "GET /api/jobs?kind=hitl-ui-change": "列出当前开发服务会话中该类型的任务历史。",
             "GET /api/jobs/:id": "查询异步任务状态和最终输出。",
-            "POST /api/jobs/:id/actions": "暂停排队任务、继续同一任务或重试失败任务。",
+            "POST /api/jobs/:id/actions": "暂停排队任务、继续同一任务、重试失败任务，或核对已人工恢复的保留提交。",
           },
         });
         return;
@@ -888,6 +897,38 @@ export function createAgentService(options = {}) {
           job.runNumber = (job.runNumber || 1) + 1;
           queueExistingJob(job, `重试原任务，进入第 ${job.runNumber} 次执行`);
           sendJson(response, 202, { job: publicJob(job), pollUrl: `/api/jobs/${job.id}` });
+          return;
+        }
+        if (action === "reconcile") {
+          if (job.status !== "failed" || !job.taskCommit) throw new AgentServiceError("只有保留了独立提交的失败任务可以核对恢复。", 409);
+          const startedAt = Date.now();
+          const checks = [];
+          try {
+            const equivalent = await runCommand("git", ["cherry", "HEAD", job.taskCommit], { cwd: job.workspace });
+            if (!equivalent.stdout.split("\n").some((line) => line.trim() === `- ${job.taskCommit}`)) throw new AgentServiceError("当前主工作区尚未包含该任务的等价补丁。", 409);
+            checks.push({ label: "已合入补丁等价性", status: "passed", elapsedMs: 0, output: job.taskCommit });
+            const packagePath = path.join(job.workspace, "package.json");
+            if (existsSync(packagePath)) {
+              const scripts = JSON.parse(readFileSync(packagePath, "utf8")).scripts || {};
+              if (typeof scripts.test === "string") {
+                const checkStartedAt = Date.now();
+                const result = await runCommand("npm", ["test"], { cwd: job.workspace });
+                checks.push({ label: "项目测试", status: "passed", elapsedMs: Date.now() - checkStartedAt, output: `${result.stdout}\n${result.stderr}`.trim().slice(-1200) });
+              }
+            }
+          } catch (error) {
+            checks.push({ label: "人工恢复核对", status: "failed", elapsedMs: Date.now() - startedAt, output: error instanceof Error ? error.message.slice(-1600) : "未知错误" });
+            throw error;
+          }
+          job.status = "succeeded";
+          job.error = null;
+          job.completedAt = new Date().toISOString();
+          job.integrationStatus = "integrated";
+          job.integrationMethod = "equivalent-patch-reconciled";
+          job.hostVerification = { status: "passed", elapsedMs: Date.now() - startedAt, checks };
+          decision(job, "integration", "已核对主工作区包含保留提交的等价补丁，且项目测试通过", { method: job.integrationMethod });
+          persistJobs();
+          sendJson(response, 200, { job: publicJob(job) });
           return;
         }
         throw new AgentServiceError("不支持的任务操作。", 422);

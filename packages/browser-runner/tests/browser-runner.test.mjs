@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -7,6 +9,7 @@ import { createBrowserService } from "../server.mjs";
 import { EvidenceStore, sanitizeUrl } from "../lib/evidence-store.mjs";
 import { BrowserRunnerError } from "../lib/operation-budget.mjs";
 import { materializeOperationStep } from "../lib/setup-fixture.mjs";
+import { isProbeAllowed, parseGroupTarget } from "../lib/group-target-probe.mjs";
 
 class FakePage {
   constructor() { this.currentUrl = "about:blank"; this.closed = false; this.cancelled = false; }
@@ -307,6 +310,40 @@ test("draft assets and unresolved issues hard-block execution before a session i
   } finally { await closeService(item); }
 });
 
+test("evaluation metadata defaults legacy assets to active mainline and preserves experimental blockers", async () => {
+  const item = await serviceWithFake();
+  try {
+    const legacy = await item.service.controlPlane.create({ title: "legacy fixed regression", steps: [] });
+    assert.deepEqual(legacy.evaluation, { track: "mainline", lifecycle: "active", target: {}, promotion: {} });
+
+    const experimental = await item.service.controlPlane.create({
+      title: "isolated office experiment",
+      steps: [],
+      environment: { baseUrl: "http://127.0.0.1:3041" },
+      sourceRevision: "e333d1bd",
+      evaluation: {
+        track: "experiment",
+        lifecycle: "blocked",
+        blockedReason: "export package lost an image relationship",
+        target: { name: "OnlyOffice local lab", instance: "local-3041" },
+        fixturePolicy: "create a clean project each run; retain on failure",
+        promotion: { targetAssetId: "onlyoffice-mainline", note: "promote after stable reruns" },
+      },
+    });
+    assert.equal(experimental.evaluation.track, "experiment");
+    assert.equal(experimental.evaluation.target.baseUrl, "http://127.0.0.1:3041/");
+    assert.equal(experimental.evaluation.lifecycle, "blocked");
+    const result = await item.service.controlPlane.run(experimental.id, item.service.manager);
+    assert.equal(result.errorCode, "TEST_CASE_LIFECYCLE_BLOCKED");
+    assert.match(result.error, /export package/);
+    assert.equal(item.runner.calls.length, 0);
+
+    const persisted = JSON.parse(await readFile(path.join(item.root, "test-cases.json"), "utf8"));
+    assert.equal(persisted.cases.find((testCase) => testCase.id === legacy.id).evaluation.track, "mainline");
+    assert.equal(persisted.cases.find((testCase) => testCase.id === experimental.id).evaluation.promotion.targetAssetId, "onlyoffice-mainline");
+  } finally { await closeService(item); }
+});
+
 test("cleanup runs after a completed main sequence and keeps cleanup failure evidence visible", async () => {
   const item = await serviceWithFake();
   try {
@@ -425,6 +462,93 @@ test("HTTP returns 200 for execution-only completion and 422 for draft blocking"
   } finally { await closeService(item); }
 });
 
+test("check groups persist an exact external-check ordering and reject unsafe layouts", async () => {
+  const externalChecks = {
+    list: async () => [{ id: "alpha" }, { id: "beta" }, { id: "gamma" }],
+    get: async () => ({ id: "alpha" }),
+    start: async () => ({ id: "run" }),
+  };
+  const item = await serviceWithFake({ externalChecks });
+  try {
+    const initial = await fetch(`${item.baseUrl}/api/check-groups`).then((response) => response.json());
+    assert.deepEqual(initial.layout, { schemaVersion: 2, groups: [], ungroupedCheckIds: ["alpha", "beta", "gamma"] });
+    const layout = { groups: [{ id: "onlyoffice", name: "OnlyOffice 实验", targetUrl: "http://127.0.0.1:3041", collapsed: true, checkIds: ["gamma", "alpha"] }], ungroupedCheckIds: ["beta"] };
+    const saved = await fetch(`${item.baseUrl}/api/check-groups`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(layout) });
+    assert.equal(saved.status, 200);
+    assert.deepEqual((await saved.json()).layout, { schemaVersion: 2, groups: [{ ...layout.groups[0], lastProbe: null, startRequest: null }], ungroupedCheckIds: ["beta"] });
+    const persisted = JSON.parse(await readFile(path.join(item.root, "check-groups.json"), "utf8"));
+    assert.deepEqual(persisted, { schemaVersion: 2, groups: [{ ...layout.groups[0], lastProbe: null, startRequest: null }], ungroupedCheckIds: ["beta"] });
+    const duplicate = await fetch(`${item.baseUrl}/api/check-groups`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ groups: [{ id: "duplicated", name: "重复", checkIds: ["alpha"] }], ungroupedCheckIds: ["alpha", "beta", "gamma"] }) });
+    assert.equal(duplicate.status, 422);
+    assert.equal((await duplicate.json()).errorCode, "CHECK_GROUP_DUPLICATE_CHECK");
+    const unknown = await fetch(`${item.baseUrl}/api/check-groups`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ groups: [], ungroupedCheckIds: ["alpha", "beta", "unknown"] }) });
+    assert.equal(unknown.status, 422);
+    assert.equal((await unknown.json()).errorCode, "CHECK_GROUP_UNKNOWN_CHECK");
+  } finally { await closeService(item); }
+});
+
+test("group start assistance is a persisted request queue and never accepts a command", async () => {
+  const externalChecks = { list: async () => [{ id: "alpha" }], get: async () => ({ id: "alpha" }), start: async () => ({ id: "run" }) };
+  const item = await serviceWithFake({ externalChecks });
+  try {
+    const headers = { "content-type": "application/json" };
+    await fetch(`${item.baseUrl}/api/check-groups`, { method: "PUT", headers, body: JSON.stringify({ groups: [{ id: "local", name: "本机", checkIds: ["alpha"] }], ungroupedCheckIds: [] }) });
+    const created = await fetch(`${item.baseUrl}/api/check-groups/local/start-request`, { method: "POST", headers, body: JSON.stringify({ mode: "codex_session", command: "touch should-never-run" }) });
+    assert.equal(created.status, 201);
+    const body = await created.json();
+    assert.equal(body.layout.groups[0].startRequest.mode, "codex_session");
+    assert.equal(body.layout.groups[0].startRequest.status, "pending");
+    assert.match(body.layout.groups[0].startRequest.reason, /不会自行创建/);
+    assert.equal(JSON.stringify(body.layout.groups[0].startRequest).includes("touch should-never-run"), false);
+    const script = await fetch(`${item.baseUrl}/api/check-groups/local/start-request`, { method: "POST", headers, body: JSON.stringify({ mode: "managed_script" }) }).then((response) => response.json());
+    assert.equal(script.layout.groups[0].startRequest.status, "blocked");
+    const invalid = await fetch(`${item.baseUrl}/api/check-groups/local/start-request`, { method: "POST", headers, body: JSON.stringify({ mode: "shell" }) });
+    assert.equal(invalid.status, 422);
+    assert.equal((await invalid.json()).errorCode, "CHECK_GROUP_INVALID_START_MODE");
+    const cleared = await fetch(`${item.baseUrl}/api/check-groups/local/start-request`, { method: "DELETE" }).then((response) => response.json());
+    assert.equal(cleared.layout.groups[0].startRequest, null);
+  } finally { await closeService(item); }
+});
+
+test("group target configuration persists, rejects credential URLs, and never probes non-loopback targets", async () => {
+  const externalChecks = { list: async () => [{ id: "alpha" }], get: async () => ({ id: "alpha" }), start: async () => ({ id: "run" }) };
+  const item = await serviceWithFake({ externalChecks });
+  try {
+    const headers = { "content-type": "application/json" };
+    const local = { groups: [{ id: "local", name: "本机", targetUrl: item.baseUrl, checkIds: ["alpha"] }], ungroupedCheckIds: [] };
+    const saved = await fetch(`${item.baseUrl}/api/check-groups`, { method: "PUT", headers, body: JSON.stringify(local) });
+    assert.equal(saved.status, 200);
+    const probe = await fetch(`${item.baseUrl}/api/check-groups/local/probe`, { method: "POST" }).then((response) => response.json());
+    assert.equal(probe.probe.status, "online");
+    assert.equal(probe.probe.httpStatus, 200);
+    assert.ok(probe.probe.checkedAt);
+    const persistedProbe = { ...probe.probe, errorCode: null };
+    assert.deepEqual(probe.layout.groups[0].lastProbe, persistedProbe);
+    const refreshed = await fetch(`${item.baseUrl}/api/check-groups`).then((response) => response.json());
+    assert.deepEqual(refreshed.layout.groups[0].lastProbe, persistedProbe);
+
+    const credential = { groups: [{ id: "bad", name: "不安全", targetUrl: "http://user:secret@127.0.0.1:3041", checkIds: ["alpha"] }], ungroupedCheckIds: [] };
+    const rejected = await fetch(`${item.baseUrl}/api/check-groups`, { method: "PUT", headers, body: JSON.stringify(credential) });
+    assert.equal(rejected.status, 422);
+    assert.equal((await rejected.json()).errorCode, "CHECK_GROUP_INVALID_TARGET");
+
+    const remote = { groups: [{ id: "remote", name: "测试环境", targetUrl: "http://203.0.113.1:1234", checkIds: ["alpha"] }], ungroupedCheckIds: [] };
+    assert.equal((await fetch(`${item.baseUrl}/api/check-groups`, { method: "PUT", headers, body: JSON.stringify(remote) })).status, 200);
+    const forbidden = await fetch(`${item.baseUrl}/api/check-groups/remote/probe`, { method: "POST" });
+    assert.equal(forbidden.status, 403);
+    const forbiddenBody = await forbidden.json();
+    assert.equal(forbiddenBody.errorCode, "CHECK_GROUP_TARGET_PROBE_FORBIDDEN");
+    assert.deepEqual(forbiddenBody.layout.groups[0].lastProbe.status, "unknown");
+    assert.equal(forbiddenBody.layout.groups[0].lastProbe.errorCode, "CHECK_GROUP_TARGET_PROBE_FORBIDDEN");
+
+    // Parser-only check: an exact configured remote target becomes eligible without issuing a real remote request.
+    const remoteTarget = parseGroupTarget("http://203.0.113.1:1234");
+    assert.equal(isProbeAllowed(remoteTarget, "http://203.0.113.1:1234"), true);
+    assert.equal(isProbeAllowed(remoteTarget, "http://203.0.113.1:1235"), false);
+    assert.equal(isProbeAllowed(remoteTarget, "http://203.0.113.0/24"), false);
+  } finally { await closeService(item); }
+});
+
 test("serves the independent control-plane console without an application frontend", async () => {
   const item = await serviceWithFake();
   try {
@@ -433,18 +557,195 @@ test("serves the independent control-plane console without an application fronte
     assert.match(pageResponse.headers.get("content-type"), /text\/html/);
     const page = await pageResponse.text();
     assert.match(page, /评测控制台/);
+    assert.doesNotMatch(page, /TEST CONTROL PLANE/);
+    assert.match(page, /示例角色/);
     assert.match(page, /\/console\.js/);
+    assert.match(page, /\/evaluation-console\.svg/);
+    assert.match(page, /——刘天赐开发/);
+    const consoleScript = await fetch(`${item.baseUrl}/console.js`).then((response) => response.text());
+    assert.match(consoleScript, /data-move-group/);
+    assert.match(consoleScript, /data-probe-group/);
+    assert.match(consoleScript, /data-group-name/);
+    assert.match(consoleScript, /data-start-request/);
+    assert.doesNotMatch(consoleScript, /data-rename-group/);
+    const iconResponse = await fetch(`${item.baseUrl}/evaluation-console.svg`);
+    assert.equal(iconResponse.status, 200);
+    assert.match(iconResponse.headers.get("content-type"), /image\/svg\+xml/);
 
     const scriptResponse = await fetch(`${item.baseUrl}/console.js`);
     assert.equal(scriptResponse.status, 200);
     const script = await scriptResponse.text();
-    assert.match(script, /assetState === 'runnable'/);
+    assert.match(script, /assetState\s*===\s*'runnable'/);
     assert.match(script, /业务未评估/);
     assert.match(script, /清理失败/);
     assert.match(script, /caseSnapshot/);
     assert.match(script, /runRequestErrors\.set/);
     assert.match(script, /执行请求状态未确认/);
+    assert.match(script, /data-hitl-action="retry"/);
   } finally { await closeService(item); }
+});
+
+test("trace catalog overlays analyzed sessions onto a complete system snapshot", async () => {
+  const fixtureRoot = await mkdtemp(path.join(tmpdir(), "agent-eval-trace-catalog-"));
+  const eventsPath = path.join(fixtureRoot, "events.json");
+  const analysisPath = path.join(fixtureRoot, "analysis.json");
+  const manifestPath = path.join(fixtureRoot, "manifest.json");
+  const catalogPath = path.join(fixtureRoot, "index.json");
+  const events = [{ sessionId: "session-1", seq: 1, type: "click", route: "/fixture", target: { tag: "button" }, payload: {} }];
+  const analysis = { schemaVersion: 1, sourceSessionId: "session-1", sourceRevision: "abc", analyzedAt: "2026-01-02T00:00:00.000Z", analyzer: { kind: "codex", analysisVersion: "v1" }, summary: "fixture analysis", segments: [], facts: [], inferences: [], unknowns: [], prerequisites: [] };
+  await writeFile(eventsPath, JSON.stringify(events, null, 2));
+  await writeFile(analysisPath, JSON.stringify(analysis, null, 2));
+  await writeFile(manifestPath, JSON.stringify({ schemaVersion: "system-trace-snapshot.v1", snapshotAt: "2026-01-03T00:00:00.000Z", sourceRevision: "def", complete: true, sessionCount: 2, eventCount: 2, browserInstanceIdColumnPresent: false, records: [
+    { sessionId: "session-1", startedAt: "2026-01-01T00:00:00.000Z", lastSeenAt: "2026-01-01T00:01:00.000Z", eventCount: 1, appRevision: "abc", eventTypes: { click: 1 }, eventsRef: eventsPath, eventsSha256: createHash("sha256").update(await readFile(eventsPath)).digest("hex") },
+    { sessionId: "session-2", startedAt: "2026-01-01T00:02:00.000Z", eventCount: 1, appRevision: "def", eventTypes: { scroll: 1 } },
+  ] }));
+  await writeFile(catalogPath, JSON.stringify({ schemaVersion: 1, generatedAt: "2026-01-02T00:00:00.000Z", items: [{ sourceSessionId: "session-1", title: "analyzed", summary: "fixture analysis", codexAnalysis: { status: "available", file: "analysis.json", sha256: createHash("sha256").update(JSON.stringify(analysis)).digest("hex") }, dshAnalysis: { status: "not-analyzed" } }], jointAnalyses: [] }, null, 2));
+  const item = await serviceWithFake({ traceCatalogPath: catalogPath, systemTraceManifestPath: manifestPath });
+  try {
+    const catalog = await fetch(`${item.baseUrl}/api/traces`).then((response) => response.json());
+    assert.equal(catalog.items.length, 2);
+    assert.equal(catalog.items[0].codexAnalysis.status, "available");
+    assert.equal(catalog.items[1].codexAnalysis.status, "not-analyzed");
+    assert.equal("eventsRef" in catalog.items[0], false);
+    assert.equal("eventsSha256" in catalog.items[0], false);
+    assert.equal(catalog.manualRecording.status, "empty");
+    const detail = await fetch(`${item.baseUrl}/api/traces/session-1`).then((response) => response.json());
+    assert.equal(detail.codexAnalysis.summary, "fixture analysis");
+    assert.equal(detail.events[0].type, "click");
+    assert.equal("eventsRef" in detail.item, false);
+    assert.equal("eventsSha256" in detail.item, false);
+    assert.deepEqual(detail.eventWindow, { returned: 1, total: 1, truncated: false });
+  } finally { await closeService(item); await rm(fixtureRoot, { recursive: true, force: true }); }
+});
+
+test("HITL retry proxy keeps the original failed job id", async () => {
+  const job = { id: "44444444-4444-4444-8444-444444444444", kind: "hitl-ui-change", status: "failed" };
+  let action = null;
+  const dsh = createServer(async (request, response) => {
+    const chunks = []; for await (const chunk of request) chunks.push(chunk);
+    response.setHeader("content-type", "application/json");
+    if (request.method === "POST" && request.url === `/api/jobs/${job.id}/actions`) { action = JSON.parse(Buffer.concat(chunks).toString("utf8")); job.status = "queued"; response.statusCode = 202; response.end(JSON.stringify({ job })); }
+    else if (request.url === "/api/health") response.end(JSON.stringify({ ready: true }));
+    else { response.statusCode = 404; response.end("{}"); }
+  });
+  await new Promise((resolve) => dsh.listen(0, "127.0.0.1", resolve));
+  const item = await serviceWithFake({ dshBridgeUrl: `http://127.0.0.1:${dsh.address().port}` });
+  try {
+    const response = await fetch(`${item.baseUrl}/api/hitl-ui/jobs/${job.id}/actions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "retry" }) });
+    assert.equal(response.status, 202);
+    assert.deepEqual(action, { action: "retry" });
+    assert.equal((await response.json()).job.id, job.id);
+  } finally { await closeService(item); await new Promise((resolve) => dsh.close(resolve)); }
+});
+
+test("PinAsk annotations queue a fixed-workspace HITL job without trusting a client workspace", async () => {
+  const annotation = { question: "把这个按钮改成紫色", ui_elements: [{ selector: "#save", tag: "button", name: "保存" }], scene: { href: "http://127.0.0.1:4373/" }, source: "agent-eval-console" };
+  let savedAnnotation = null;
+  const pinAsk = createServer(async (request, response) => {
+    const chunks = []; for await (const chunk of request) chunks.push(chunk);
+    response.setHeader("content-type", request.url.endsWith(".js") ? "text/javascript" : request.url.endsWith(".css") ? "text/css" : "application/json");
+    if (request.url === "/overlay/pinask.js") response.end("window.PinAsk={mount(){},setOn(){}};");
+    else if (request.url === "/overlay/pinask.css") response.end("#pinask-root{position:fixed}");
+    else if (request.method === "GET" && request.url.startsWith("/api/pinask")) response.end(JSON.stringify({ ok: true, items: [] }));
+    else if (request.method === "POST" && request.url === "/api/pinask") { savedAnnotation = JSON.parse(Buffer.concat(chunks).toString("utf8")); response.end(JSON.stringify({ ok: true, item: { ...savedAnnotation, id: "pq_fixed" } })); }
+    else { response.statusCode = 404; response.end("{}"); }
+  });
+  let dshSubmission = null;
+  const job = { id: "22222222-2222-4222-8222-222222222222", kind: "hitl-ui-change", status: "queued", createdAt: new Date().toISOString(), question: annotation.question };
+  const dsh = createServer(async (request, response) => {
+    const chunks = []; for await (const chunk of request) chunks.push(chunk);
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/api/health") response.end(JSON.stringify({ ok: true, ready: true }));
+    else if (request.method === "POST" && request.url === "/api/hitl-ui-changes") { dshSubmission = JSON.parse(Buffer.concat(chunks).toString("utf8")); response.statusCode = 202; response.end(JSON.stringify({ job })); }
+    else if (request.method === "GET" && request.url.startsWith("/api/jobs?")) response.end(JSON.stringify({ jobs: [job] }));
+    else { response.statusCode = 404; response.end("{}"); }
+  });
+  await Promise.all([new Promise((resolve) => pinAsk.listen(0, "127.0.0.1", resolve)), new Promise((resolve) => dsh.listen(0, "127.0.0.1", resolve))]);
+  const item = await serviceWithFake({ pinAskUrl: `http://127.0.0.1:${pinAsk.address().port}`, dshBridgeUrl: `http://127.0.0.1:${dsh.address().port}`, hitlWorkspace: "/fixed/eval-console" });
+  try {
+    assert.equal((await fetch(`${item.baseUrl}/pinask/overlay.js`)).status, 200);
+    assert.equal((await fetch(`${item.baseUrl}/api/hitl-ui/health`).then((value) => value.json())).ok, true);
+    const response = await fetch(`${item.baseUrl}/api/hitl-ui/submit`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...annotation, workspace: "/client/must-not-control" }) });
+    assert.equal(response.status, 202);
+    assert.equal((await response.json()).job.id, job.id);
+    assert.equal(savedAnnotation.workspace, "/client/must-not-control", "PinAsk preserves the original annotation snapshot");
+    assert.equal(dshSubmission.workspace, "/fixed/eval-console");
+    assert.equal(dshSubmission.annotation.id, "pq_fixed");
+    assert.equal(dshSubmission.annotation.question, annotation.question);
+    assert.deepEqual((await fetch(`${item.baseUrl}/api/hitl-ui/jobs`).then((value) => value.json())).jobs, [job]);
+  } finally {
+    await closeService(item);
+    await Promise.all([new Promise((resolve) => pinAsk.close(resolve)), new Promise((resolve) => dsh.close(resolve))]);
+  }
+});
+
+test("a saved PinAsk annotation remains identifiable when DSH queue status is unknown", async () => {
+  const pinAsk = createServer(async (request, response) => {
+    const chunks = []; for await (const chunk of request) chunks.push(chunk);
+    response.setHeader("content-type", "application/json");
+    if (request.method === "POST" && request.url === "/api/pinask") response.end(JSON.stringify({ ok: true, item: { ...JSON.parse(Buffer.concat(chunks).toString("utf8")), id: "pq_saved_unknown" } }));
+    else if (request.method === "GET" && request.url.startsWith("/api/pinask")) response.end(JSON.stringify({ ok: true, items: [] }));
+    else { response.statusCode = 404; response.end("{}"); }
+  });
+  const dsh = createServer((request, response) => {
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/api/health") response.end(JSON.stringify({ ok: true, ready: true }));
+    else if (request.method === "POST" && request.url === "/api/hitl-ui-changes") { response.statusCode = 503; response.end(JSON.stringify({ error: { message: "synthetic queue outage" } })); }
+    else if (request.method === "GET" && request.url.startsWith("/api/jobs?")) response.end(JSON.stringify({ jobs: [] }));
+    else { response.statusCode = 404; response.end("{}"); }
+  });
+  await Promise.all([new Promise((resolve) => pinAsk.listen(0, "127.0.0.1", resolve)), new Promise((resolve) => dsh.listen(0, "127.0.0.1", resolve))]);
+  const item = await serviceWithFake({ pinAskUrl: `http://127.0.0.1:${pinAsk.address().port}`, dshBridgeUrl: `http://127.0.0.1:${dsh.address().port}`, hitlWorkspace: "/fixed/eval-console" });
+  try {
+    const response = await fetch(`${item.baseUrl}/api/hitl-ui/submit`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question: "fixture", ui_elements: [{ selector: "#save" }] }) });
+    assert.equal(response.status, 502);
+    const payload = await response.json();
+    assert.equal(payload.errorCode, "DSH_SUBMISSION_UNCONFIRMED");
+    assert.equal(payload.error.details.annotationId, "pq_saved_unknown");
+    assert.match(payload.error.message, /已保存.*状态未确认/);
+  } finally {
+    await closeService(item);
+    await Promise.all([new Promise((resolve) => pinAsk.close(resolve)), new Promise((resolve) => dsh.close(resolve))]);
+  }
+});
+
+test("control plane proxies read-only DSH proposals and persists human review", async () => {
+  const confirmations = [{ id: "scope", question: "确认覆盖范围？", proposedValue: "保存与切章", blocking: true, evidence: ["event-1"] }];
+  const job = { id: "11111111-1111-4111-8111-111111111111", kind: "test-proposal", status: "succeeded", permissionMode: "read-only", createdAt: new Date().toISOString(), result: { structuredOutput: { summary: "只读提案", confirmations, proposedSuites: { gate: [], nightly: [], manual: [] }, unknowns: [] } } };
+  let submitted = null;
+  const dsh = createServer(async (request, response) => {
+    const chunks = []; for await (const chunk of request) chunks.push(chunk);
+    if (request.method === "POST") submitted = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/api/health") response.end(JSON.stringify({ ok: true, ready: true }));
+    else if (request.url.startsWith("/api/jobs?")) response.end(JSON.stringify({ jobs: [job] }));
+    else if (request.url === `/api/jobs/${job.id}`) response.end(JSON.stringify({ job }));
+    else if (request.url === "/api/test-proposals") { response.statusCode = 202; response.end(JSON.stringify({ job, pollUrl: `/api/jobs/${job.id}` })); }
+    else { response.statusCode = 404; response.end("{}"); }
+  });
+  await new Promise((resolve) => dsh.listen(0, "127.0.0.1", resolve));
+  const dshUrl = `http://127.0.0.1:${dsh.address().port}`;
+  const item = await serviceWithFake({ dshBridgeUrl: dshUrl, proposalPreset: async () => ({ workspace: "/allowed", trace: { events: [{ type: "click" }] } }) });
+  try {
+    assert.equal((await fetch(`${item.baseUrl}/api/test-proposals/health`).then((value) => value.json())).ready, true);
+    const created = await fetch(`${item.baseUrl}/api/test-proposals/jobs`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ preset: "current-trace" }) }).then((value) => value.json());
+    assert.equal(created.job.permissionMode, "read-only");
+    assert.deepEqual(submitted, { workspace: "/allowed", trace: { events: [{ type: "click" }] } });
+    const historical = await fetch(`${item.baseUrl}/api/test-proposals/jobs/${job.id}`).then((value) => value.json());
+    assert.equal(historical.proposalContext, undefined, "a historical job must not inherit the current preset context");
+    const draft = await fetch(`${item.baseUrl}/api/test-proposals/jobs/${job.id}/review`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "pending", answers: [{ id: "scope", value: "先保存草稿" }] }) }).then((value) => value.json());
+    assert.equal(draft.testCase.humanConfirmation.status, "pending");
+    const oversizedResponse = await fetch(`${item.baseUrl}/api/test-proposals/jobs/${job.id}/review`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "confirmed", answers: [{ id: "scope", value: `长${"x".repeat(4000)}DO_NOT_GENERATE` }] }) });
+    assert.equal(oversizedResponse.status, 422);
+    const afterRejection = await fetch(`${item.baseUrl}/api/test-proposals/jobs/${job.id}`).then((value) => value.json());
+    assert.equal(afterRejection.review.humanConfirmation.status, "pending");
+    assert.equal(afterRejection.review.humanConfirmation.items[0].humanValue, "先保存草稿");
+    assert.deepEqual(afterRejection.review.runs, []);
+    const saved = await fetch(`${item.baseUrl}/api/test-proposals/jobs/${job.id}/review`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "confirmed", answers: [{ id: "scope", value: "只覆盖保存与切章" }] }) }).then((value) => value.json());
+    assert.equal(saved.testCase.humanConfirmation.status, "confirmed");
+    assert.equal(saved.testCase.humanConfirmation.items[0].humanValue, "只覆盖保存与切章");
+    assert.equal((await fetch(`${item.baseUrl}/api/test-proposals/jobs/${job.id}`).then((value) => value.json())).review.metadata.kind, "dsh-proposal");
+  } finally { await closeService(item); await new Promise((resolve) => dsh.close(resolve)); }
 });
 
 test("generic setup fixture resolves baseUrl plus env and secretRef values without persisting plaintext", async () => {
@@ -514,6 +815,17 @@ test("Planora local login example uses an exact submit target and waits for its 
   assert.deepEqual(login.waitFor, { type: "url", expected: "dashboard/projects" });
   const materialized = await materializeOperationStep(login, { baseUrl: fixture.environment.baseUrl });
   assert.equal(materialized.input.waitFor.expected, "http://127.0.0.1:3019/liutianci/dashboard/projects");
+  const response = await materializeOperationStep({
+    operation: "act",
+    action: "click",
+    target: { testId: "generate" },
+    waitFor: { type: "response", url: "api/generate", method: "POST" },
+  }, { baseUrl: fixture.environment.baseUrl });
+  assert.deepEqual(response.input.waitFor, {
+    type: "response",
+    url: "http://127.0.0.1:3019/liutianci/api/generate",
+    method: "POST",
+  });
 });
 
 test("local Planora login example is executable using runtime env references only", async () => {

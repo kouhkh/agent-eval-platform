@@ -3,6 +3,8 @@
 .env.*
 *.log
 node_modules/
+.local-data/
+.local-dsh/
 packages/*/data/
 coverage/
 dist/

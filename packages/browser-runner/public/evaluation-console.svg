@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 34 34">
+  <defs><linearGradient id="evaluation-console-gradient" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8f85ff"/><stop offset="1" stop-color="#5b49ef"/></linearGradient></defs>
+  <rect width="34" height="34" rx="10" fill="url(#evaluation-console-gradient)"/>
+  <g fill="#fff"><rect x="8" y="14" width="7" height="12" rx="3.5" opacity=".55" transform="rotate(18 11.5 20)"/><rect x="15" y="8" width="7" height="19" rx="3.5" opacity=".8" transform="rotate(18 18.5 17.5)"/><rect x="22" y="3" width="7" height="25" rx="3.5" transform="rotate(18 25.5 15.5)"/></g>
+</svg>

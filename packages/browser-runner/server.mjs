@@ -1,5 +1,5 @@
 import http from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,12 +8,17 @@ import { PlaywrightRunner } from "./lib/browser-runner.mjs";
 import { BrowserRunnerError } from "./lib/operation-budget.mjs";
 import { SessionManager } from "./lib/session-manager.mjs";
 import { TestControlPlane } from "./lib/test-control-plane.mjs";
+import { ExternalCheckService } from "./lib/external-check-service.mjs";
+import { CheckGroupStore } from "./lib/check-group-store.mjs";
+import { ManagedGroupStarter } from "./lib/managed-group-starter.mjs";
+import { probeGroupTarget } from "./lib/group-target-probe.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CONSOLE_ASSETS = new Map([
   ["/", { file: "index.html", type: "text/html; charset=utf-8" }],
   ["/console.js", { file: "console.js", type: "text/javascript; charset=utf-8" }],
   ["/console.css", { file: "console.css", type: "text/css; charset=utf-8" }],
+  ["/evaluation-console.svg", { file: "evaluation-console.svg", type: "image/svg+xml" }],
 ]);
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
@@ -93,6 +98,65 @@ export function createBrowserService(options = {}) {
     env: options.env,
     secretResolver: options.secretResolver,
   });
+  const externalChecks = options.externalChecks || new ExternalCheckService({
+    statePath: path.join(dataRoot, "external-check-runs.json"),
+    adapter: options.externalCheckAdapter,
+  });
+  const checkGroups = options.checkGroups || new CheckGroupStore({ statePath: path.join(dataRoot, "check-groups.json") });
+  const startPlans = Array.isArray(options.groupStartPlans) ? options.groupStartPlans : [];
+  const groupStarter = new ManagedGroupStarter({
+    plans: startPlans,
+    onUpdate: async (groupId, patch) => {
+      const checks = await externalChecks.list();
+      await checkGroups.updateStartRequest(groupId, patch, checks.map((check) => check.id));
+    },
+  });
+  const groupProbeAllowlist = options.groupProbeAllowlist ?? process.env.AGENT_EVAL_ALLOWED_GROUP_PROBE_TARGETS ?? "";
+  const dshBridgeUrl = options.dshBridgeUrl || process.env.AGENT_EVAL_DSH_URL || null;
+  const pinAskUrl = options.pinAskUrl || process.env.AGENT_EVAL_PINASK_URL || null;
+  const hitlWorkspace = options.hitlWorkspace || process.env.AGENT_EVAL_HITL_WORKSPACE || null;
+  const traceCatalogPath = options.traceCatalogPath || process.env.AGENT_EVAL_TRACE_CATALOG_PATH || null;
+  const systemTraceManifestPath = options.systemTraceManifestPath || process.env.AGENT_EVAL_SYSTEM_TRACE_MANIFEST_PATH || null;
+  const publicTraceItem = ({ eventsRef: _eventsRef, eventsSha256: _eventsSha256, ...item }) => item;
+  const readTraceCatalog = async () => {
+    const analysisCatalog = traceCatalogPath ? JSON.parse(await readFile(traceCatalogPath, "utf8")) : { schemaVersion: 1, items: [], jointAnalyses: [] };
+    if (analysisCatalog.schemaVersion !== 1 || !Array.isArray(analysisCatalog.items)) throw new BrowserRunnerError("TRACE_CATALOG_INVALID", "系统轨迹分析目录格式不受支持。", { statusCode: 502, phase: "trace-catalog" });
+    const analyses = new Map(analysisCatalog.items.map((item) => [item.sourceSessionId, item]));
+    if (!systemTraceManifestPath) return { ...analysisCatalog, snapshotAt: analysisCatalog.generatedAt || null, complete: null, manualRecording: { status: "empty", message: "暂无人工录制轨迹" } };
+    const manifest = JSON.parse(await readFile(systemTraceManifestPath, "utf8"));
+    if (manifest.schemaVersion !== "system-trace-snapshot.v1" || !Array.isArray(manifest.records)) throw new BrowserRunnerError("SYSTEM_TRACE_MANIFEST_INVALID", "系统轨迹快照格式不受支持。", { statusCode: 502, phase: "trace-catalog" });
+    const items = manifest.records.map((record) => {
+      const analysis = analyses.get(record.sessionId);
+      return {
+        sourceKind: "system-telemetry", sourceSessionId: record.sessionId, sourceRevision: record.appRevision || manifest.sourceRevision || null,
+        startedAt: record.startedAt, lastSeenAt: record.lastSeenAt, eventCount: record.eventCount, eventTypes: record.eventTypes || {},
+        entryPath: record.entryPath, lastPath: record.lastPath, hasObservedError: record.hasObservedError === true, businessOutcome: "unknown",
+        eventsRef: record.eventsRef, eventsSha256: record.eventsSha256,
+        title: analysis?.title || "系统采集轨迹", summary: analysis?.summary || "尚未分析；当前只展示已脱敏的操作记录，不判定业务成功或失败。",
+        codexAnalysis: analysis?.codexAnalysis || { status: "not-analyzed" }, dshAnalysis: analysis?.dshAnalysis || { status: "not-analyzed" },
+      };
+    });
+    return { schemaVersion: 1, generatedAt: analysisCatalog.generatedAt || null, snapshotAt: manifest.snapshotAt, sourceRevision: manifest.sourceRevision, complete: manifest.complete === true, sessionCount: manifest.sessionCount, eventCount: manifest.eventCount, browserInstanceIdColumnPresent: manifest.browserInstanceIdColumnPresent === true, items, jointAnalyses: analysisCatalog.jointAnalyses || [], manualRecording: { status: "empty", message: "暂无人工录制轨迹" } };
+  };
+  const dshRequest = async (pathname, init = {}) => {
+    if (!dshBridgeUrl) throw new BrowserRunnerError("DSH_NOT_CONFIGURED", "DSH 服务尚未配置。", { statusCode: 503, phase: "dsh-bridge" });
+    let response;
+    try {
+      response = await fetch(new URL(pathname, dshBridgeUrl), { ...init, signal: AbortSignal.timeout(init.timeoutMs || 10_000), headers: { "content-type": "application/json", ...init.headers } });
+    } catch (error) {
+      throw new BrowserRunnerError("DSH_UNREACHABLE", "暂时无法连接 DSH 服务。", { statusCode: 503, phase: "dsh-bridge", details: { cause: error?.name || "network" } });
+    }
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new BrowserRunnerError("DSH_REQUEST_FAILED", payload?.error?.message || payload?.message || (typeof payload?.error === "string" ? payload.error : "DSH 请求失败。"), { statusCode: response.status, phase: "dsh-bridge" });
+    return payload;
+  };
+  const pinAskRequest = async (pathname, init = {}) => {
+    if (!pinAskUrl) throw new BrowserRunnerError("PINASK_NOT_CONFIGURED", "PinAsk 服务尚未配置。", { statusCode: 503, phase: "pinask" });
+    let response;
+    try { response = await fetch(new URL(pathname, pinAskUrl), { ...init, signal: AbortSignal.timeout(init.timeoutMs || 5_000), headers: { ...init.headers } }); }
+    catch (error) { throw new BrowserRunnerError("PINASK_UNREACHABLE", "暂时无法连接 PinAsk 服务。", { statusCode: 503, phase: "pinask", details: { cause: error?.name || "network" } }); }
+    return response;
+  };
   const integrations = Array.isArray(options.integrations) ? options.integrations.map((item) => ({
     id: String(item.id || ""),
     version: String(item.version || "0.1.0"),
@@ -111,10 +175,139 @@ export function createBrowserService(options = {}) {
         response.end(body);
         return;
       }
+      if (request.method === "GET" && ["/pinask/overlay.js", "/pinask/overlay.css"].includes(url.pathname)) {
+        const upstreamPath = url.pathname.endsWith(".js") ? "/overlay/pinask.js" : "/overlay/pinask.css";
+        const upstream = await pinAskRequest(upstreamPath);
+        if (!upstream.ok) throw new BrowserRunnerError("PINASK_ASSET_FAILED", "PinAsk 界面资源加载失败。", { statusCode: 502, phase: "pinask" });
+        const body = Buffer.from(await upstream.arrayBuffer());
+        response.writeHead(200, { "content-type": upstreamPath.endsWith(".js") ? "text/javascript; charset=utf-8" : "text/css; charset=utf-8", "content-length": body.length, "cache-control": "no-store", "x-content-type-options": "nosniff" });
+        response.end(body);
+        return;
+      }
       if (request.method === "GET" && url.pathname === "/api/health") {
         const health = await runner.health();
         sendJson(response, 200, { ok: true, service: "agent-eval-browser-runner", mode: "dev", runner: health, sessionCount: manager.list().length, sessions: manager.list().map((item) => ({ sessionId: item.sessionId, tabId: item.tabId, state: item.state })) });
         return;
+      }
+      if (parts[0] === "api" && parts[1] === "traces") {
+        const sourceSessionId = parts[2];
+        const catalog = await readTraceCatalog();
+        if (request.method === "GET" && !sourceSessionId) { sendJson(response, 200, { ...catalog, items: catalog.items.map(publicTraceItem) }); return; }
+        if (request.method === "GET" && sourceSessionId) {
+          const item = catalog.items.find((entry) => entry.sourceSessionId === sourceSessionId);
+          if (!item) throw new BrowserRunnerError("TRACE_NOT_FOUND", "轨迹不存在。", { statusCode: 404, phase: "trace-catalog" });
+          let codexAnalysis = null;
+          let events = [];
+          let totalEvents = Number(item.eventCount || 0);
+          if (item.eventsRef && systemTraceManifestPath) {
+            const snapshotDirectory = path.dirname(systemTraceManifestPath);
+            const eventsPath = path.resolve(item.eventsRef);
+            if (!eventsPath.startsWith(`${snapshotDirectory}${path.sep}`)) throw new BrowserRunnerError("TRACE_EVENTS_PATH_INVALID", "轨迹事件文件路径越界。", { statusCode: 502, phase: "trace-catalog" });
+            const eventsBody = await readFile(eventsPath);
+            if (item.eventsSha256 && createHash("sha256").update(eventsBody).digest("hex") !== item.eventsSha256) throw new BrowserRunnerError("TRACE_EVENTS_DIGEST_MISMATCH", "轨迹事件文件校验失败。", { statusCode: 502, phase: "trace-catalog" });
+            const parsedEvents = JSON.parse(eventsBody.toString("utf8"));
+            totalEvents = parsedEvents.length;
+            events = parsedEvents.slice(0, 300);
+          }
+          if (item.codexAnalysis?.status === "available" && item.codexAnalysis.file) {
+            const catalogDirectory = path.dirname(traceCatalogPath);
+            const analysisPath = path.resolve(catalogDirectory, item.codexAnalysis.file);
+            if (path.dirname(analysisPath) !== catalogDirectory) throw new BrowserRunnerError("TRACE_ANALYSIS_PATH_INVALID", "轨迹分析文件路径越界。", { statusCode: 502, phase: "trace-catalog" });
+            const body = await readFile(analysisPath);
+            codexAnalysis = JSON.parse(body.toString("utf8"));
+            if (item.codexAnalysis.sha256 && createHash("sha256").update(JSON.stringify(codexAnalysis)).digest("hex") !== item.codexAnalysis.sha256) throw new BrowserRunnerError("TRACE_ANALYSIS_DIGEST_MISMATCH", "轨迹分析文件校验失败。", { statusCode: 502, phase: "trace-catalog" });
+          }
+          sendJson(response, 200, { item: publicTraceItem(item), events, eventWindow: { returned: events.length, total: totalEvents, truncated: totalEvents > events.length }, codexAnalysis, jointAnalyses: catalog.jointAnalyses || [] });
+          return;
+        }
+      }
+      if (parts[0] === "api" && parts[1] === "test-proposals") {
+        const resource = parts[2];
+        const jobId = parts[3];
+        const action = parts[4];
+        if (request.method === "GET" && resource === "health") { sendJson(response, 200, await dshRequest("/api/health")); return; }
+        if (request.method === "GET" && resource === "jobs" && !jobId) { sendJson(response, 200, await dshRequest(`/api/jobs?kind=test-proposal&limit=${Math.min(50, Number(url.searchParams.get("limit")) || 20)}`)); return; }
+        if (request.method === "GET" && resource === "jobs" && jobId && !action) {
+          const payload = await dshRequest(`/api/jobs/${encodeURIComponent(jobId)}`);
+          try { payload.review = await controlPlane.get(`dsh-proposal-${jobId}`); } catch (error) { if (error?.code !== "TEST_CASE_NOT_FOUND") throw error; }
+          sendJson(response, 200, payload);
+          return;
+        }
+        if (request.method === "POST" && resource === "jobs" && !jobId) {
+          const body = await readJson(request);
+          const proposalInput = body.preset && options.proposalPreset ? await options.proposalPreset(body.preset) : body;
+          sendJson(response, 202, await dshRequest("/api/test-proposals", { method: "POST", body: JSON.stringify(proposalInput), timeoutMs: 15_000 }));
+          return;
+        }
+        if (request.method === "PATCH" && resource === "jobs" && jobId && action === "review") {
+          const body = await readJson(request);
+          const payload = await dshRequest(`/api/jobs/${encodeURIComponent(jobId)}`);
+          const output = payload.job?.result?.structuredOutput;
+          if (!output || !Array.isArray(output.confirmations)) throw new BrowserRunnerError("PROPOSAL_NOT_READY", "DSH 提案尚未生成可确认内容。", { statusCode: 409, phase: "dsh-review" });
+          const rawAnswers = Array.isArray(body.answers) ? body.answers : [];
+          const oversizedAnswer = rawAnswers.find((item) => String(item?.value || "").length > 4000);
+          if (oversizedAnswer) throw new BrowserRunnerError("CONFIRMATION_TOO_LONG", "单项确认内容不能超过 4000 个字符，请精简后再保存。", { statusCode: 422, phase: "dsh-review" });
+          const answers = new Map(rawAnswers.map((item) => [String(item.id), String(item.value || "").trim()]));
+          const items = output.confirmations.map((item, index) => ({
+            id: String(item.id || `confirmation-${index + 1}`), question: String(item.question || "待确认项"), proposedValue: String(item.proposedValue || ""),
+            humanValue: answers.get(String(item.id || `confirmation-${index + 1}`)) || "", blocking: item.blocking === true,
+            status: answers.get(String(item.id || `confirmation-${index + 1}`)) ? "confirmed" : "unresolved", evidence: Array.isArray(item.evidence) ? item.evidence.map(String) : [],
+          }));
+          const requestedStatus = String(body.status || "pending");
+          if (requestedStatus === "confirmed" && items.some((item) => item.blocking && !item.humanValue)) throw new BrowserRunnerError("CONFIRMATION_INCOMPLETE", "仍有必须确认的内容没有填写。", { statusCode: 422, phase: "dsh-review" });
+          const id = `dsh-proposal-${jobId}`;
+          const input = {
+            id, title: `DSH 提案 · ${String(output.summary || "轨迹分析").slice(0, 80)}`, description: String(output.summary || ""), project: "DSH 只读轨迹分析",
+            assetState: "draft", draftIssues: (output.unknowns || []).map((message) => ({ code: "DSH_UNKNOWN", message: String(message) })),
+            metadata: { kind: "dsh-proposal", proposalId: jobId },
+            humanConfirmation: { status: requestedStatus, questions: items.map((item) => item.question), items },
+          };
+          let testCase;
+          try { await controlPlane.get(id); testCase = await controlPlane.update(id, input); }
+          catch (error) { if (error?.code !== "TEST_CASE_NOT_FOUND") throw error; testCase = await controlPlane.create(input); }
+          sendJson(response, 200, { testCase });
+          return;
+        }
+      }
+      if (parts[0] === "api" && parts[1] === "hitl-ui") {
+        const resource = parts[2];
+        const jobId = parts[3];
+        const action = parts[4];
+        if (request.method === "GET" && resource === "health") {
+          const [pinAskHealth, dshHealth] = await Promise.all([
+            pinAskRequest("/api/pinask?status=open").then((value) => value.ok),
+            dshRequest("/api/health"),
+          ]);
+          sendJson(response, 200, { ok: pinAskHealth && dshHealth.ready === true, pinAskReady: pinAskHealth, dshReady: dshHealth.ready === true });
+          return;
+        }
+        if (request.method === "GET" && resource === "jobs" && !jobId) { sendJson(response, 200, await dshRequest(`/api/jobs?kind=hitl-ui-change&limit=${Math.min(100, Number(url.searchParams.get("limit")) || 50)}`)); return; }
+        if (request.method === "GET" && resource === "jobs" && jobId && !action) { sendJson(response, 200, await dshRequest(`/api/jobs/${encodeURIComponent(jobId)}`)); return; }
+        if (request.method === "POST" && resource === "jobs" && jobId && action === "actions") {
+          const body = await readJson(request);
+          sendJson(response, 202, await dshRequest(`/api/jobs/${encodeURIComponent(jobId)}/actions`, { method: "POST", body: JSON.stringify(body) }));
+          return;
+        }
+        if (request.method === "POST" && resource === "submit") {
+          if (!hitlWorkspace) throw new BrowserRunnerError("HITL_WORKSPACE_NOT_CONFIGURED", "当前评测前端工作区尚未配置。", { statusCode: 503, phase: "hitl-ui" });
+          const annotation = await readJson(request);
+          if (!String(annotation.question || "").trim() || !Array.isArray(annotation.ui_elements) || annotation.ui_elements.length === 0) throw new BrowserRunnerError("INVALID_HITL_ANNOTATION", "请先选择界面元素并填写修改意见。", { statusCode: 422, phase: "hitl-ui" });
+          const savedResponse = await pinAskRequest("/api/pinask", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(annotation) });
+          const saved = await savedResponse.json().catch(() => ({}));
+          if (!savedResponse.ok || !saved.item) throw new BrowserRunnerError("PINASK_SAVE_FAILED", saved.error || "PinAsk 标注保存失败。", { statusCode: savedResponse.status || 502, phase: "pinask" });
+          let queued;
+          try {
+            queued = await dshRequest("/api/hitl-ui-changes", { method: "POST", body: JSON.stringify({ workspace: hitlWorkspace, annotation: saved.item }), timeoutMs: 15_000 });
+          } catch (error) {
+            throw new BrowserRunnerError("DSH_SUBMISSION_UNCONFIRMED", `PinAsk 已保存标注 ${saved.item.id}，但 DSH 排队状态未确认。请先查看历史，不要重复提交。`, {
+              statusCode: 502,
+              phase: "dsh-bridge",
+              details: { annotationId: saved.item.id, cause: error?.code || error?.name || "unknown" },
+            });
+          }
+          sendJson(response, queued.deduplicated ? 200 : 202, { ...queued, annotation: { id: saved.item.id } });
+          return;
+        }
       }
       if (request.method === "GET" && url.pathname === "/api/spec") {
         sendJson(response, 200, {
@@ -134,6 +327,14 @@ export function createBrowserService(options = {}) {
             "GET /api/test-cases": "列出控制平面中的测试资产。",
             "POST /api/test-cases": "创建测试资产（setup/步骤/断言/环境/门禁策略）。",
             "POST /api/test-cases/:id/runs": "执行 runnable 测试资产；draft 或待补全资产会被阻断。",
+            "GET /api/checks": "列出外部适配器注册的固定回归检查及历史。",
+            "GET /api/traces": "列出已脱敏的系统轨迹与分析可用状态。",
+            "GET /api/traces/:sourceSessionId": "读取单条轨迹及通过摘要校验的 Codex 分析。",
+            "POST /api/checks/:id/runs": "通过资产预绑定的白名单执行入口启动回归；不接受任意命令。",
+            "GET|POST /api/test-proposals/jobs": "查看或启动 DSH 只读轨迹提案任务；不会应用代码。",
+            "PATCH /api/test-proposals/jobs/:id/review": "把人工确认内容保存为控制平面测试资产。",
+            "POST /api/hitl-ui/submit": "保存 PinAsk 元素标注，并对服务端固定的当前评测前端工作区提交 DSH 修改任务。",
+            "GET /api/hitl-ui/jobs": "查看 PinAsk 界面修改任务状态与历史。",
           },
           response: { operationId: "string", sessionId: "string", tabId: "string", status: "succeeded|failed|cancelling", elapsedMs: "number", phase: "string", errorCode: "string|null", evidenceRefs: "string[]" },
           setupFixture: {
@@ -216,6 +417,61 @@ export function createBrowserService(options = {}) {
           return;
         }
       }
+      if (parts[0] === "api" && parts[1] === "checks") {
+        const checkId = parts[2];
+        const action = parts[3];
+        if (request.method === "GET" && !checkId) { sendJson(response, 200, { checks: await externalChecks.list() }); return; }
+        if (request.method === "GET" && checkId && !action) { sendJson(response, 200, { check: await externalChecks.get(checkId) }); return; }
+        if (request.method === "POST" && checkId && action === "runs") { sendJson(response, 202, { run: await externalChecks.start(checkId) }); return; }
+      }
+      if (parts[0] === "api" && parts[1] === "check-groups" && parts.length === 2) {
+        const checks = await externalChecks.list();
+        const checkIds = checks.map((check) => check.id);
+        if (request.method === "GET") { sendJson(response, 200, { layout: await checkGroups.get(checkIds) }); return; }
+        if (request.method === "PUT") { sendJson(response, 200, { layout: await checkGroups.replace(await readJson(request), checkIds) }); return; }
+      }
+      if (parts[0] === "api" && parts[1] === "check-groups" && parts.length === 4 && parts[3] === "probe" && request.method === "POST") {
+        const checks = await externalChecks.list();
+        const checkIds = checks.map((check) => check.id);
+        const layout = await checkGroups.get(checkIds);
+        const group = layout.groups.find((item) => item.id === parts[2]);
+        if (!group) throw new BrowserRunnerError("CHECK_GROUP_NOT_FOUND", "没有对应的分组。", { statusCode: 404, phase: "check-groups" });
+        try {
+          const probe = await probeGroupTarget(group.targetUrl, { allowedTargets: groupProbeAllowlist });
+          const updated = await checkGroups.recordProbe(group.id, probe, checkIds);
+          sendJson(response, 200, { targetUrl: group.targetUrl, probe, layout: updated });
+        } catch (error) {
+          if (error instanceof BrowserRunnerError && error.code === "CHECK_GROUP_TARGET_PROBE_FORBIDDEN") {
+            const probe = { status: "unknown", checkedAt: new Date().toISOString(), elapsedMs: 0, httpStatus: null, errorCode: error.code };
+            const updated = await checkGroups.recordProbe(group.id, probe, checkIds);
+            sendJson(response, error.statusCode || 403, { ...errorResponse(error), targetUrl: group.targetUrl, probe, layout: updated });
+            return;
+          }
+          throw error;
+        }
+        return;
+      }
+      if (parts[0] === "api" && parts[1] === "check-groups" && parts.length === 4 && parts[3] === "start-request") {
+        const checks = await externalChecks.list();
+        const checkIds = checks.map((check) => check.id);
+        if (request.method === "POST") {
+          const body = await readJson(request);
+          let layout = await checkGroups.requestStart(parts[2], body.mode, checkIds);
+          if (body.mode === "managed_script") {
+            const group = layout.groups.find((item) => item.id === parts[2]);
+            if (group?.startPlanId) {
+              const outcome = await groupStarter.start(group);
+              layout = await checkGroups.updateStartRequest(parts[2], outcome, checkIds);
+            }
+          }
+          sendJson(response, 201, { layout });
+          return;
+        }
+        if (request.method === "DELETE") {
+          sendJson(response, 200, { layout: await checkGroups.clearStartRequest(parts[2], checkIds) });
+          return;
+        }
+      }
       sendJson(response, 404, { errorCode: "NOT_FOUND", error: { code: "NOT_FOUND", message: "没有对应的 API 路由。", phase: "router", retryable: false, details: null } });
     } catch (error) {
       const normalized = error instanceof BrowserRunnerError ? error : new BrowserRunnerError("SERVICE_ERROR", error instanceof Error ? error.message : String(error), { statusCode: 500, phase: "service" });
@@ -223,7 +479,7 @@ export function createBrowserService(options = {}) {
     }
   });
 
-  return { server, runner, manager, controlPlane, evidenceStore, integrations, dataRoot };
+  return { server, runner, manager, controlPlane, externalChecks, checkGroups, evidenceStore, integrations, dataRoot };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {

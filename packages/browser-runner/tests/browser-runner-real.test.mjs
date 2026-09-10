@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
+import { createServer } from "node:http";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -80,6 +81,88 @@ async function filesBelow(root) {
     .map((entry) => path.join(entry.parentPath || entry.path, entry.name));
 }
 
+test("act waits for one exact delayed HTTP response without persisting transport secrets", { timeout: 30_000 }, async () => {
+  const sensitive = "response-wait-secret-never-persist";
+  const http = createServer((request, response) => {
+    if (request.url === "/") {
+      response.writeHead(200, { "content-type": "text/html" });
+      response.end(`<!doctype html><button id="generate">Generate</button><script>
+        document.querySelector('#generate').onclick = async () => {
+          await fetch('/strategy');
+          await fetch('/generate', { method: 'POST', headers: { 'x-fixture-secret': '${sensitive}' }, body: '${sensitive}' });
+        };
+      </script>`);
+      return;
+    }
+    if (request.url === "/strategy") {
+      setTimeout(() => { response.writeHead(200); response.end("strategy"); }, 40);
+      return;
+    }
+    if (request.url === "/generate" && request.method === "POST") {
+      request.resume();
+      setTimeout(() => { response.writeHead(422, { "set-cookie": `fixture=${sensitive}` }); response.end(sensitive); }, 120);
+      return;
+    }
+    if (request.url === "/slow" && request.method === "POST") {
+      request.resume();
+      setTimeout(() => { response.writeHead(200); response.end("late"); }, 2_000);
+      return;
+    }
+    response.writeHead(404); response.end("missing");
+  });
+  await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${http.address().port}`;
+  const item = await realManager();
+  try {
+    const created = await item.manager.createSession({ url: baseUrl });
+    const page = item.manager.get(created.sessionId).page;
+    const responseListenerCount = page.listenerCount("response");
+    const result = await item.manager.act(created.sessionId, {
+      action: "click",
+      target: { selector: "#generate" },
+      approvedScope: "isolated delayed-response fixture",
+      waitFor: { type: "response", url: "/generate", method: "POST" },
+      deadlineMs: 5_000,
+    });
+    assert.equal(result.status, "succeeded", JSON.stringify(result.error));
+    assert.deepEqual(result.data.waitFor, { type: "response", url: `${baseUrl}/generate`, method: "POST", status: 422 });
+    assert.equal(page.listenerCount("response"), responseListenerCount);
+
+    const resultRef = result.evidenceRefs.find((ref) => ref.endsWith("result.json"));
+    const resultPath = path.join(item.root, "evidence", ...resultRef.replace("evidence://", "").split("/"));
+    const saved = JSON.parse(await readFile(resultPath, "utf8"));
+    assert.deepEqual(saved.waitFor, { type: "response", url: `${baseUrl}/generate`, method: "POST", status: 422 });
+    const networkRef = result.evidenceRefs.find((ref) => ref.endsWith("network.json"));
+    const networkPath = path.join(item.root, "evidence", ...networkRef.replace("evidence://", "").split("/"));
+    const network = JSON.parse(await readFile(networkPath, "utf8"));
+    assert.ok(network.some((entry) => entry.method === "GET" && entry.url === `${baseUrl}/strategy` && entry.status === 200));
+    assert.ok(network.some((entry) => entry.method === "POST" && entry.url === `${baseUrl}/generate` && entry.status === 422));
+    for (const file of await filesBelow(path.join(item.root, "evidence"))) {
+      assert.equal((await readFile(file)).includes(Buffer.from(sensitive)), false, file);
+    }
+
+    await page.setContent(`<button id="slow" onclick="fetch('${baseUrl}/slow', { method: 'POST' })">Slow</button>`);
+    const startedAt = Date.now();
+    const timedOut = await item.manager.act(created.sessionId, {
+      action: "click",
+      target: { selector: "#slow" },
+      approvedScope: "isolated response deadline fixture",
+      waitFor: { type: "response", url: `${baseUrl}/slow`, method: "POST" },
+      deadlineMs: 700,
+      evidenceTimeoutMs: 75,
+    });
+    assert.equal(timedOut.errorCode, "DEADLINE_EXCEEDED");
+    assert.ok(Date.now() - startedAt < 2_000);
+    assert.equal(page.listenerCount("response"), responseListenerCount);
+    assert.equal(item.manager.get(created.sessionId).state, "stale");
+  } finally {
+    await item.manager.dispose();
+    await item.runner.close();
+    await new Promise((resolve) => http.close(resolve));
+    await rm(item.root, { recursive: true, force: true });
+  }
+});
+
 test("control-plane console keeps an unconfirmed run request error visible after refresh", { timeout: 30_000 }, async () => {
   const root = await mkdtemp(path.join(tmpdir(), "agent-eval-console-real-"));
   const runner = new PlaywrightRunner({ headless: true, profileRoot: path.join(root, "profiles") });
@@ -105,6 +188,100 @@ test("control-plane console keeps an unconfirmed run request error visible after
     await service.manager.dispose();
     await new Promise((resolve) => service.server.close(resolve));
     await runner.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("control-plane list refreshes fixed-check history after a run without a page reload", { timeout: 30_000 }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-eval-console-refresh-"));
+  const runner = new PlaywrightRunner({ headless: true, profileRoot: path.join(root, "profiles") });
+  const history = [{ id: "old", executionStatus: "finished", checkVerdict: "passed", businessVerdict: "not_evaluated", startedAt: "2026-01-01T00:00:00.000Z", checkResults: [], evidenceRefs: [] }];
+  const check = () => ({ id: "refresh-check", title: "刷新检查", project: "fixture", purpose: "验证列表刷新", method: "fixture", basis: "fixture", baseline: { version: "v1", applicationRevision: "abc" }, executor: { id: "fixture-runner", argument: "refresh" }, objectiveChecks: ["声明检查项"], proposedQualityChecks: [], history: structuredClone(history), latestRun: structuredClone(history.at(-1)) });
+  const externalChecks = {
+    list: async () => [check()],
+    get: async () => check(),
+    start: async () => {
+      const run = { id: "new", executionStatus: "finished", checkVerdict: "passed", businessVerdict: "not_evaluated", startedAt: "2026-01-02T00:00:00.000Z", checkResults: [{ status: "pass", label: "产物可读" }], evidenceRefs: [] };
+      history.push(run);
+      return structuredClone(run);
+    },
+  };
+  const service = createBrowserService({ runner, externalChecks, dataRoot: root, heartbeatMs: 60_000 });
+  await new Promise((resolve) => service.server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${service.server.address().port}`;
+  try {
+    const created = await service.manager.createSession({ url: baseUrl });
+    const page = service.manager.get(created.sessionId).page;
+    const row = page.locator('[data-check-id="refresh-check"]');
+    assert.equal(await row.locator(".case-icon").count(), 0);
+    assert.match(await row.textContent(), /1 次历史.*已就绪.*计划检查项.*声明检查项/s);
+    await page.locator('[data-check-id="refresh-check"]').click();
+    await page.locator("#run").click();
+    await page.locator("#back").click();
+    await page.locator('[data-check-id="refresh-check"]').filter({ hasText: "2 次历史" }).waitFor({ state: "visible" });
+    assert.match(await page.locator('[data-check-id="refresh-check"]').textContent(), /2026\/1\/2/);
+    assert.equal(await page.locator('[data-check-id="refresh-check"] .check-split-row.pass').count(), 1);
+    assert.match(await page.locator('[data-check-id="refresh-check"] .check-split-row.pass').textContent(), /通过.*产物可读/s);
+  } finally {
+    await service.manager.dispose();
+    await new Promise((resolve) => service.server.close(resolve));
+    await runner.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("PinAsk progress polling preserves expanded history and coalesces concurrent saves", { timeout: 30_000 }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-eval-pinask-real-"));
+  const runner = new PlaywrightRunner({ headless: true, profileRoot: path.join(root, "profiles") });
+  let pinAskSaves = 0;
+  let dshSubmissions = 0;
+  let dshPolls = 0;
+  const job = { id: "33333333-3333-4333-8333-333333333333", kind: "hitl-ui-change", status: "running", createdAt: "2026-09-09T00:00:00.000Z", question: "保留展开状态", live: { events: [{ text: "fixture" }] } };
+  const pinAsk = createServer(async (request, response) => {
+    const chunks = []; for await (const chunk of request) chunks.push(chunk);
+    if (request.url === "/overlay/pinask.js") {
+      response.writeHead(200, { "content-type": "text/javascript" });
+      response.end("window.PinAsk={mount(options){window.__pinaskOptions=options;const button=document.createElement('button');button.id='pinask-save';button.textContent='save';document.body.appendChild(button);},setOn(){}};");
+    } else if (request.url === "/overlay/pinask.css") { response.writeHead(200, { "content-type": "text/css" }); response.end(""); }
+    else if (request.method === "GET" && request.url.startsWith("/api/pinask")) { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ ok: true, items: [] })); }
+    else if (request.method === "POST" && request.url === "/api/pinask") { pinAskSaves += 1; response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ ok: true, item: { ...JSON.parse(Buffer.concat(chunks).toString("utf8")), id: "pq_real_fixture" } })); }
+    else { response.statusCode = 404; response.end("missing"); }
+  });
+  const dsh = createServer(async (request, response) => {
+    const chunks = []; for await (const chunk of request) chunks.push(chunk);
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/api/health") response.end(JSON.stringify({ ok: true, ready: true }));
+    else if (request.method === "GET" && request.url.startsWith("/api/jobs?")) { dshPolls += 1; response.end(JSON.stringify({ jobs: [job] })); }
+    else if (request.method === "POST" && request.url === "/api/hitl-ui-changes") { dshSubmissions += 1; await new Promise((resolve) => setTimeout(resolve, 150)); response.statusCode = 202; response.end(JSON.stringify({ job })); }
+    else { response.statusCode = 404; response.end("{}"); }
+  });
+  await Promise.all([new Promise((resolve) => pinAsk.listen(0, "127.0.0.1", resolve)), new Promise((resolve) => dsh.listen(0, "127.0.0.1", resolve))]);
+  const service = createBrowserService({ runner, dataRoot: root, heartbeatMs: 60_000, pinAskUrl: `http://127.0.0.1:${pinAsk.address().port}`, dshBridgeUrl: `http://127.0.0.1:${dsh.address().port}`, hitlWorkspace: "/fixed/eval-console" });
+  await new Promise((resolve) => service.server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${service.server.address().port}`;
+  try {
+    const created = await service.manager.createSession({ url: baseUrl });
+    const page = service.manager.get(created.sessionId).page;
+    await page.locator("#hitl-ball").click();
+    const details = page.locator(`[data-hitl-job="${job.id}"]`);
+    await details.waitFor({ state: "visible" });
+    await details.locator("summary").click();
+    assert.equal(await details.evaluate((element) => element.open), true);
+    const pollsBefore = dshPolls;
+    await page.waitForFunction((minimum) => window.performance.now() > minimum, await page.evaluate(() => performance.now() + 2_300));
+    assert.ok(dshPolls > pollsBefore, "the background poll ran");
+    assert.equal(await page.locator(`[data-hitl-job="${job.id}"]`).evaluate((element) => element.open), true);
+
+    const batch = { question: "只保存一次", ui_elements: [{ selector: "#hitl-ball" }] };
+    const results = await page.evaluate(async (value) => Promise.all([window.__pinaskOptions.onSave(value), window.__pinaskOptions.onSave(value)]), batch);
+    assert.equal(results[0].id, results[1].id);
+    assert.equal(pinAskSaves, 1);
+    assert.equal(dshSubmissions, 1);
+  } finally {
+    await service.manager.dispose();
+    await new Promise((resolve) => service.server.close(resolve));
+    await runner.close();
+    await Promise.all([new Promise((resolve) => pinAsk.close(resolve)), new Promise((resolve) => dsh.close(resolve))]);
     await rm(root, { recursive: true, force: true });
   }
 });

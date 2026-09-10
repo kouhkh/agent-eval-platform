@@ -58,10 +58,26 @@ GET  /api/sessions/:id/trace
 GET  /api/test-cases
 POST /api/test-cases
 POST /api/test-cases/:id/runs
+GET  /api/checks
+GET  /api/checks/:id
+POST /api/checks/:id/runs
 ```
 
 操作成功和失败都返回包含 `operationId`、`sessionId`、`tabId`、`status`、`elapsedMs`、`phase`、`errorCode` 和 `evidenceRefs` 的统一 envelope。
 `act` 还记录 `before-evidence`、`perform`、`dialog`、`postcondition` 和 `after-evidence` 阶段；超时错误的 `details.operationPhase` 指明最后阶段及已完成阶段耗时，不再只返回笼统的整体 deadline。
+
+需要把异步 HTTP 响应纳入同一动作证据窗口时，可在 `act` 中声明精确的 `waitFor.response`：
+
+```json
+{
+  "action": "click",
+  "target": { "role": "button", "name": "生成内容" },
+  "approvedScope": "执行已确认的本地回归步骤",
+  "waitFor": { "type": "response", "url": "/api/generate", "method": "POST" }
+}
+```
+
+响应监听在动作前安装，URL 和 method 都必须精确匹配；相对 URL 按用例的 `environment.baseUrl` 解析。任何 HTTP 状态（包括 4xx/5xx）都会结束等待并保留状态码，但不读取或落盘 body、headers 或 cookie；产品是否通过仍由独立断言决定。
 `inspect.elements` 把 `textContent`、`ariaLabel`、`nameAttribute` 分开，不把展示文本冒充成 accessible name。`accessibleNameStatus: "not-computed"` 表示本轮未计算可访问名；调用方应原样使用 `recommendedTarget.target`。优先级为 testId/uiKey/id/显式 aria-label；都缺失时返回标记为 `ephemeral` 的当前 DOM CSS 路径，不应直接固化为长期资产。
 
 ## CLI / MCP
@@ -87,9 +103,46 @@ CLI 通过 `AGENT_EVAL_URL` 指定服务地址；JSON 参数也可用 `@/absolut
 
 `/api/test-cases` 提供第一版 CRUD。资产包含 `assetState`、`draftIssues`、`setup`、`steps`、`cleanup`、人工确认后的 `assertions`、`environment`、`sourceRevision` 和 `policy.gate/nightly`。`assetState: "draft"` 或仍有 `draftIssues` 的资产会在创建浏览器 session 前以 `TEST_CASE_NOT_EXECUTABLE` 阻断；只有 `runnable` 且待补全项清零的版本可以执行。轨迹不直接等于测试，浏览器运行器也不负责 Agent 自主规划。
 
+资产另有独立的 `evaluation` 元数据，供控制台区分持续主干回归和本地探索，不替代页面写操作的 `approvedScope`：
+
+```json
+{
+  "evaluation": {
+    "track": "experiment",
+    "lifecycle": "blocked",
+    "blockedReason": "导出 DOCX 缺失图片关系，保留失败现场等待修复。",
+    "target": { "name": "OnlyOffice 本地实验台", "instance": "local-3041", "baseUrl": "http://127.0.0.1:3041" },
+    "fixturePolicy": "每轮新建合成项目；失败保留，成功后清理",
+    "promotion": { "targetAssetId": "future-mainline-onlyoffice", "note": "稳定重跑后再晋升候选回归" }
+  }
+}
+```
+
+`track` 只能是 `mainline`、`experiment` 或 `candidate`；旧资产默认 `mainline/active`，因此保留原有 `runnable` 语义。`lifecycle` 为 `draft`、`active`、`blocked` 或 `retired`；`blocked` 与 `retired` 会在创建浏览器 session 前阻断运行，控制台展示原因与最近一次运行。实验资产无需专用 adapter，除非它确实需要通用浏览器步骤之外的受控文件或业务检查。
+
 每次 run 固化 `caseVersion`、不含运行历史的 `caseSnapshot` 及其 SHA-256 摘要。主步骤执行状态由 `executionStatus` 表达；业务判定由 `businessVerdict` 单独表达。没有权威断言的成功重放返回 `status: "completed"`、`executionStatus: "completed"`、`businessVerdict: "not_evaluated"`，不能写成业务通过。含权威断言且断言全部成功时才保留兼容字段 `status: "passed"`。HTTP 对 `completed` 和 `passed` 都返回 200。
 
 `cleanup.steps` 与 setup 使用相同的通用操作结构，在主步骤完成或中断后运行。清理操作、证据、错误以及平台拥有 session 的关闭结果都保存在同一 run 的 `cleanup` 字段；清理失败会让兼容字段 `status` 为 `failed`，不会被吞掉。
+
+### 外部固定回归检查
+
+`/api/checks` 把固定回归资产、历史和执行状态放入控制平面，但核心服务不内置业务映射。部署时注册可信 adapter，每项资产预绑定 executor id 和参数；HTTP 请求不能传入 shell 命令。执行状态与检查结果分开，重启前未完成的记录标记为 `interrupted`，不自动重跑。导入历史保留原始任务时间和来源，不把导入时间冒充执行时间。
+
+本地固定回归演示是外部组合，需显式指向已有资产根目录：
+
+```sh
+AGENT_EVAL_FIXED_ROOT=/absolute/path/to/fixed-assets npm run start:fixed
+```
+
+本机 OnlyOffice v2 实验资产只在显式设置 `AGENT_EVAL_DANGEROUS_V2_ROOT` 时接入同一控制台。它导入该目录的 `asset.json` 和最新证据；当前失败现场显示为 `experiment / blocked`。控制台不会自动重跑、恢复或删除保留现场。人工点击执行时，适配器仅调用仓库内固定的、已审查 driver，且不接受 HTTP 传入命令、项目编号或凭据。
+
+`adapters/planora-fixed-regression.mjs` 是第一个外部配置/检查实例，不是平台核心对 Planora 的硬编码。它只判断基线绑定、请求证据、新 job 绑定、任务终态和产物存在/非空；目录覆盖范围和正文质量保留为待人工确认提案。
+
+### 技术规格书离线改写回归
+
+`adapters/technical-spec-rewrite-regression.mjs` 读取冻结的飞书句级金标与装船机金标，校验源码 revision 和 SHA-256，再执行已检入的离线改写、路由、白盒审计和飞书质量脚本。它不访问 3033、Stanza HTTP、LLM 或远端。以 `AGENT_EVAL_TECH_SPEC_REWRITE_ROOT` 指向已核验的 Planora 本地工作树后，该独立检查才会注册到控制台。`fixtures/technical-spec-rewrite-regression/manifest.json` 冻结了 7 篇全文的 R11 规则/Stanza 哈希与统计，以及 R12 模型审计快照；模型记录只供人工或夜间复核，不构成稳定离线通过条件。
+
+多个独立回归集通过 `adapters/external-check-adapter-registry.mjs` 组合：每个适配器只声明自己拥有的稳定 `executorIds`，并由其 `load()` 导入资产、历史和任意业务元数据，由其 `execute()` 产出 `executionStatus`、`checkVerdict`、`businessVerdict`、逐项 `checkResults` 和 `evidenceRefs`。外部资产同样使用上文的 `evaluation` 契约；未声明时兼容为 `mainline/active`，而 `blocked` 或 `retired` 会在调用 adapter 之前拒绝启动。注册层拒绝重复 executor、重复资产 id 以及“资产 executor 属于另一适配器”的错误；它不接受 HTTP 传入的 shell 命令。OnlyOffice 等新回归集应新增独立适配器并注册，而不是修改 Planora 固定回归适配器。
 
 ### 通用 setup fixture
 

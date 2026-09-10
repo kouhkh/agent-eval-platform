@@ -9,6 +9,7 @@
   },
   "scripts": {
     "start": "node server.mjs",
+    "start:fixed": "node bin/start-fixed-regression.mjs",
     "test": "node --test tests/*.test.mjs",
     "eval": "node bin/eval-test.mjs",
     "mcp": "node bin/mcp.mjs"
