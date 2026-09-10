@@ -5,10 +5,47 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { createPlanoraFixedRegressionAdapter } from "../adapters/planora-fixed-regression.mjs";
+import { createExternalCheckAdapterRegistry } from "../adapters/external-check-adapter-registry.mjs";
 import { ExternalCheckService } from "../lib/external-check-service.mjs";
 import { TestControlPlane } from "../lib/test-control-plane.mjs";
 
 const FIXED_ROOT = process.env.AGENT_EVAL_REAL_FIXED_ROOT;
+
+test("external check registry routes only registered executors and preserves independent assets", async () => {
+  const calls = [];
+  const planora = {
+    load: async () => ({ assets: [{ id: "fixed-one", executor: { id: "planora-fixed-regression-v1", argument: "one" }, metadata: { source: "planora" } }], history: { "fixed-one": [{ id: "old-planora" }] } }),
+    execute: async (executor) => { calls.push(["planora", executor]); return { checkVerdict: "passed", businessVerdict: "not_evaluated", evidenceRefs: ["planora-result"] }; },
+  };
+  const dangerous = {
+    load: async () => ({ assets: [{ id: "dangerous-v2-one", executor: { id: "dangerous-v2-onlyoffice", argument: "asset-1" }, metadata: { source: "dangerous-v2" } }], history: { "dangerous-v2-one": [{ id: "old-dangerous" }] } }),
+    execute: async (executor) => { calls.push(["dangerous", executor]); return { checkVerdict: "attention_required", businessVerdict: "not_evaluated", evidenceRefs: ["dangerous-result"] }; },
+  };
+  const registry = createExternalCheckAdapterRegistry({ adapters: [
+    { id: "planora", executorIds: ["planora-fixed-regression-v1"], adapter: planora },
+    { id: "dangerous-v2", executorIds: ["dangerous-v2-onlyoffice"], adapter: dangerous },
+  ] });
+  const loaded = await registry.load();
+  assert.deepEqual(loaded.assets.map((asset) => asset.id), ["fixed-one", "dangerous-v2-one"]);
+  assert.equal(loaded.history["dangerous-v2-one"][0].id, "old-dangerous");
+  assert.equal(loaded.assets[1].metadata.source, "dangerous-v2");
+  await registry.execute({ id: "dangerous-v2-onlyoffice", argument: "asset-1" }, {});
+  assert.deepEqual(calls, [["dangerous", { id: "dangerous-v2-onlyoffice", argument: "asset-1" }]]);
+  await assert.rejects(() => registry.execute({ id: "unregistered" }, {}), (error) => error.code === "EXECUTOR_NOT_ALLOWED");
+});
+
+test("external check registry rejects duplicate executor and cross-owned assets", async () => {
+  const adapter = { load: async () => ({ assets: [], history: {} }), execute: async () => ({}) };
+  assert.throws(() => createExternalCheckAdapterRegistry({ adapters: [
+    { id: "one", executorIds: ["shared"], adapter },
+    { id: "two", executorIds: ["shared"], adapter },
+  ] }), (error) => error.code === "CHECK_EXECUTOR_DUPLICATE");
+  const registry = createExternalCheckAdapterRegistry({ adapters: [
+    { id: "one", executorIds: ["one"], adapter: { ...adapter, load: async () => ({ assets: [{ id: "bad", executor: { id: "two" } }], history: {} }) } },
+    { id: "two", executorIds: ["two"], adapter },
+  ] });
+  await assert.rejects(() => registry.load(), (error) => error.code === "CHECK_ASSET_EXECUTOR_OWNER_MISMATCH");
+});
 
 test("real fixture integration imports eight checks when an explicit asset root is supplied", { skip: !FIXED_ROOT }, async () => {
   const root = await mkdtemp(path.join(tmpdir(), "external-check-history-"));
