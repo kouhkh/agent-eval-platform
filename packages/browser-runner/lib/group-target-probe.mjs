@@ -20,14 +20,32 @@ export function parseGroupTarget(value) {
   return target;
 }
 
+export function normalizedTargetUrl(target) {
+  return target.href.replace(/\/$/, "");
+}
+
+export function parseAllowedGroupProbeTargets(value) {
+  if (typeof value !== "string") return new Set();
+  const allowed = new Set();
+  for (const candidate of value.split(",").map((item) => item.trim()).filter(Boolean)) {
+    try { allowed.add(normalizedTargetUrl(parseGroupTarget(candidate))); }
+    catch { /* Invalid administrator configuration never broadens the probe allowlist. */ }
+  }
+  return allowed;
+}
+
 export function isLoopbackTarget(target) {
   return target.hostname.toLowerCase() === "localhost" || target.hostname === "127.0.0.1";
 }
 
-export async function probeGroupTarget(value) {
+export function isProbeAllowed(target, configuredTargets) {
+  return isLoopbackTarget(target) || parseAllowedGroupProbeTargets(configuredTargets).has(normalizedTargetUrl(target));
+}
+
+export async function probeGroupTarget(value, options = {}) {
   const target = parseGroupTarget(value);
-  if (!isLoopbackTarget(target)) {
-    throw probeError("CHECK_GROUP_TARGET_PROBE_FORBIDDEN", "为避免控制台被用作网络探针，只允许探测 localhost 或 127.0.0.1；该地址已保存但不会被探测。", 403);
+  if (!isProbeAllowed(target, options.allowedTargets)) {
+    throw probeError("CHECK_GROUP_TARGET_PROBE_FORBIDDEN", "非本机目标需要管理员在 AGENT_EVAL_ALLOWED_GROUP_PROBE_TARGETS 中精确配置后才能探测；该地址已保存但不会被探测。", 403);
   }
   const client = target.protocol === "https:" ? https : http;
   const startedAt = new Date().toISOString();

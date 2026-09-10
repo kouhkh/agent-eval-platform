@@ -9,6 +9,7 @@ import { createBrowserService } from "../server.mjs";
 import { EvidenceStore, sanitizeUrl } from "../lib/evidence-store.mjs";
 import { BrowserRunnerError } from "../lib/operation-budget.mjs";
 import { materializeOperationStep } from "../lib/setup-fixture.mjs";
+import { isProbeAllowed, parseGroupTarget } from "../lib/group-target-probe.mjs";
 
 class FakePage {
   constructor() { this.currentUrl = "about:blank"; this.closed = false; this.cancelled = false; }
@@ -509,6 +510,12 @@ test("group target configuration persists, rejects credential URLs, and never pr
     const forbidden = await fetch(`${item.baseUrl}/api/check-groups/remote/probe`, { method: "POST" });
     assert.equal(forbidden.status, 403);
     assert.equal((await forbidden.json()).errorCode, "CHECK_GROUP_TARGET_PROBE_FORBIDDEN");
+
+    // Parser-only check: an exact configured remote target becomes eligible without issuing a real remote request.
+    const remoteTarget = parseGroupTarget("http://203.0.113.1:1234");
+    assert.equal(isProbeAllowed(remoteTarget, "http://203.0.113.1:1234"), true);
+    assert.equal(isProbeAllowed(remoteTarget, "http://203.0.113.1:1235"), false);
+    assert.equal(isProbeAllowed(remoteTarget, "http://203.0.113.0/24"), false);
   } finally { await closeService(item); }
 });
 

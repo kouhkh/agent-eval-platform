@@ -102,6 +102,7 @@ export function createBrowserService(options = {}) {
     adapter: options.externalCheckAdapter,
   });
   const checkGroups = options.checkGroups || new CheckGroupStore({ statePath: path.join(dataRoot, "check-groups.json") });
+  const groupProbeAllowlist = options.groupProbeAllowlist ?? process.env.AGENT_EVAL_ALLOWED_GROUP_PROBE_TARGETS ?? "";
   const dshBridgeUrl = options.dshBridgeUrl || process.env.AGENT_EVAL_DSH_URL || null;
   const pinAskUrl = options.pinAskUrl || process.env.AGENT_EVAL_PINASK_URL || null;
   const hitlWorkspace = options.hitlWorkspace || process.env.AGENT_EVAL_HITL_WORKSPACE || null;
@@ -425,7 +426,7 @@ export function createBrowserService(options = {}) {
         const layout = await checkGroups.get(checks.map((check) => check.id));
         const group = layout.groups.find((item) => item.id === parts[2]);
         if (!group) throw new BrowserRunnerError("CHECK_GROUP_NOT_FOUND", "没有对应的分组。", { statusCode: 404, phase: "check-groups" });
-        sendJson(response, 200, { targetUrl: group.targetUrl, probe: await probeGroupTarget(group.targetUrl) });
+        sendJson(response, 200, { targetUrl: group.targetUrl, probe: await probeGroupTarget(group.targetUrl, { allowedTargets: groupProbeAllowlist }) });
         return;
       }
       sendJson(response, 404, { errorCode: "NOT_FOUND", error: { code: "NOT_FOUND", message: "没有对应的 API 路由。", phase: "router", retryable: false, details: null } });
