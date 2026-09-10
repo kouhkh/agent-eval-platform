@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { createPlanoraFixedRegressionAdapter } from "../adapters/planora-fixed-regression.mjs";
+import { createDangerousV2OnlyOfficeAdapter } from "../adapters/dangerous-v2-onlyoffice.mjs";
 import { createExternalCheckAdapterRegistry } from "../adapters/external-check-adapter-registry.mjs";
 import { ExternalCheckService } from "../lib/external-check-service.mjs";
 import { TestControlPlane } from "../lib/test-control-plane.mjs";
@@ -45,6 +46,41 @@ test("external check registry rejects duplicate executor and cross-owned assets"
     { id: "two", executorIds: ["two"], adapter },
   ] });
   await assert.rejects(() => registry.load(), (error) => error.code === "CHECK_ASSET_EXECUTOR_OWNER_MISMATCH");
+});
+
+test("dangerous v2 adapter imports a blocked experiment without replaying or deleting its retained fixture", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "dangerous-v2-adapter-"));
+  try {
+    const runId = "20260910023441-0ba3b3c9";
+    const evidenceRoot = path.join(root, "evidence", runId);
+    await mkdir(evidenceRoot, { recursive: true });
+    await writeFile(path.join(root, "asset.json"), JSON.stringify({
+      id: "dangerous-v2-onlyoffice-table-save-reopen-export-v1",
+      title: "OnlyOffice",
+      assetState: "runnable",
+      sourceRevision: "e333d1",
+      executor: { id: "dangerous-v2-onlyoffice-external-driver-v1" },
+      fixture: { strategy: "fresh synthetic project per run", projectCodePrefix: "OO-V2-REG-" },
+      latestRecovery: { runId, executionStatus: "failed", reason: "image relationship absent" },
+    }));
+    await writeFile(path.join(evidenceRoot, "result.json"), JSON.stringify({
+      id: "dangerous-v2-onlyoffice-table-save-reopen-export-v1", runId, sourceRevision: "e333d1", executionStatus: "failed", businessVerdict: "not_evaluated",
+      environment: { name: "local-dangerous-onlyoffice-v2", baseUrl: "http://127.0.0.1:3041" }, project: { id: "owned-project", planId: "owned-plan", disposition: "retained_for_investigation" },
+      checkResults: { saveAdvancedVersion: true, imageRelationshipPresent: false }, startedAt: "2026-09-10T02:34:41.089Z", completedAt: "2026-09-10T02:35:39.867Z", error: "mechanical export check failed: imageRelationshipPresent",
+    }));
+    await writeFile(path.join(evidenceRoot, "export-checks.json"), JSON.stringify({ checks: { saveAdvancedVersion: true, imageRelationshipPresent: false } }));
+    const adapter = createDangerousV2OnlyOfficeAdapter({ root });
+    const loaded = await adapter.load();
+    const asset = loaded.assets[0];
+    assert.equal(asset.track, "experiment");
+    assert.equal(asset.lifecycle.status, "blocked");
+    assert.equal(asset.lifecycle.retryPolicy, "manual_only_no_automatic_retry");
+    assert.equal(asset.fixturePolicy.failedRunCleanup, "retain fixture; platform never deletes an existing retained fixture");
+    assert.equal(asset.executor.id, "dangerous-v2-onlyoffice-external-driver-v1");
+    assert.equal(loaded.history[asset.id][0].checkVerdict, "failed");
+    assert.equal(Object.fromEntries(loaded.history[asset.id][0].checkResults.map((item) => [item.checkId, item.status])).imageRelationshipPresent, "fail");
+    await assert.rejects(() => adapter.execute({ id: "other", argument: asset.id }), (error) => error.code === "EXECUTOR_NOT_ALLOWED");
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("real fixture integration imports eight checks when an explicit asset root is supplied", { skip: !FIXED_ROOT }, async () => {

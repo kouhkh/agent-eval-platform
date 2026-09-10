@@ -1,6 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { createExternalCheckAdapterRegistry } from "../adapters/external-check-adapter-registry.mjs";
+import { createDangerousV2OnlyOfficeAdapter } from "../adapters/dangerous-v2-onlyoffice.mjs";
 import { createPlanoraFixedRegressionAdapter } from "../adapters/planora-fixed-regression.mjs";
 import { createBrowserService } from "../server.mjs";
 
@@ -31,18 +32,21 @@ const proposalPreset = process.env.AGENT_EVAL_PROPOSAL_TRACE_PATH && process.env
     context: { source: path.basename(path.dirname(process.env.AGENT_EVAL_PROPOSAL_TRACE_PATH)), packetDigest: packet.packetDigest, sourceRevision: packet.evidence?.find((item) => item?.revision)?.revision || null, mode: "read-only proposal only; do not generate or apply scripts" },
   };
 } : null;
-const externalCheckAdapter = createExternalCheckAdapterRegistry({
-  adapters: [
+const externalAdapters = [
     {
       id: "planora-fixed-regression",
       executorIds: ["planora-fixed-regression-v1"],
       adapter: createPlanoraFixedRegressionAdapter(),
     },
-    // Future independent suites (for example dangerous-v2 OnlyOffice) register
-    // their own adapter and stable executor ids here. No shell command is read
-    // from HTTP requests or inferred by this composition layer.
-  ],
-});
+];
+if (process.env.AGENT_EVAL_DANGEROUS_V2_ROOT) {
+  externalAdapters.push({
+    id: "dangerous-v2-onlyoffice-experiment",
+    executorIds: ["dangerous-v2-onlyoffice-external-driver-v1"],
+    adapter: createDangerousV2OnlyOfficeAdapter(),
+  });
+}
+const externalCheckAdapter = createExternalCheckAdapterRegistry({ adapters: externalAdapters });
 const service = createBrowserService({ dataRoot, env: runtimeEnv, dshBridgeUrl: process.env.AGENT_EVAL_DSH_URL, pinAskUrl: process.env.AGENT_EVAL_PINASK_URL, hitlWorkspace: process.env.AGENT_EVAL_HITL_WORKSPACE, traceCatalogPath: process.env.AGENT_EVAL_TRACE_CATALOG_PATH, systemTraceManifestPath: process.env.AGENT_EVAL_SYSTEM_TRACE_MANIFEST_PATH, proposalPreset, headless: !/^(0|false|no)$/i.test(String(process.env.AGENT_EVAL_HEADLESS || "true")), externalCheckAdapter });
 service.server.listen(port, host, () => console.log(`agent-eval fixed regression console listening on http://${host}:${port}`));
 const shutdown = async () => { await service.manager.dispose(); await service.runner.close().catch(() => {}); service.server.close(() => process.exit(0)); };

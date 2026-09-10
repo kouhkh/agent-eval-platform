@@ -134,6 +134,8 @@ CLI 通过 `AGENT_EVAL_URL` 指定服务地址；JSON 参数也可用 `@/absolut
 AGENT_EVAL_FIXED_ROOT=/absolute/path/to/fixed-assets npm run start:fixed
 ```
 
+本机 OnlyOffice v2 实验资产只在显式设置 `AGENT_EVAL_DANGEROUS_V2_ROOT` 时接入同一控制台。它导入该目录的 `asset.json` 和最新证据；当前失败现场显示为 `experiment / blocked`。控制台不会自动重跑、恢复或删除保留现场。人工点击执行时，适配器仅调用仓库内固定的、已审查 driver，且不接受 HTTP 传入命令、项目编号或凭据。
+
 `adapters/planora-fixed-regression.mjs` 是第一个外部配置/检查实例，不是平台核心对 Planora 的硬编码。它只判断基线绑定、请求证据、新 job 绑定、任务终态和产物存在/非空；目录覆盖范围和正文质量保留为待人工确认提案。
 
 多个独立回归集通过 `adapters/external-check-adapter-registry.mjs` 组合：每个适配器只声明自己拥有的稳定 `executorIds`，并由其 `load()` 导入资产、历史和任意业务元数据，由其 `execute()` 产出 `executionStatus`、`checkVerdict`、`businessVerdict`、逐项 `checkResults` 和 `evidenceRefs`。注册层拒绝重复 executor、重复资产 id 以及“资产 executor 属于另一适配器”的错误；它不接受 HTTP 传入的 shell 命令。OnlyOffice 等新回归集应新增独立适配器并注册，而不是修改 Planora 固定回归适配器。
