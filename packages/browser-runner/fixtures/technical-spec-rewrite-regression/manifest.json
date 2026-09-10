@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "technical-spec-rewrite-offline-goldens-v1",
+  "executor": { "id": "technical-spec-rewrite-regression-v1" },
+  "sourceRevision": "59cf5f628f667fb1a5ac295ac71db9befe57498e",
+  "fixtureSha256": "7f0c28e0b1cc69f1ae13b345c8b2780102148aa96ca1f960413045ff4e874866",
+  "sourceFiles": [
+    { "id": "feishu", "label": "飞书句级金标源", "path": "config/technical-spec-rewrite/feishu-quality-cases.json", "sha256": "bfa8f81743357800feb8fc673069aec9e029e78953df4c9a16a9b977fffdf53e" },
+    { "id": "shiploader", "label": "装船机句子金标", "path": "scripts/test-technical-spec-rewrite-shiploader.ts", "sha256": "c84173d7bd6b7714c36a8be590ffc93ad6085fed06e041e61a7a227ac441bacf" },
+    { "id": "rewrite", "label": "离线改写测试", "path": "scripts/test-technical-spec-rewrite.ts", "sha256": "cdd4f6f57addb75bb84ab73c61bc85512f409b1112c999ee0f8c1d115a82f045" },
+    { "id": "routing", "label": "路由测试", "path": "scripts/test-technical-spec-rewrite-routing.ts", "sha256": "7f63b824bad969166980a165ba5c774fe4bf8e8d5233757a225f38c0bf02206d" },
+    { "id": "audit", "label": "审计测试", "path": "scripts/test-technical-spec-rewrite-audit.ts", "sha256": "e7b5b9ede759050160d17277b426955157f0ab8e60fe9d2a9a9f8adc66a2bfb9" }
+  ],
+  "cases": [
+    { "id": "feishu-quality-suite", "input": "config/technical-spec-rewrite/feishu-quality-cases.json", "expected": "15条可执行期望和显式blocked项", "route": "deterministic|stanza|hybrid|manual_review", "protection": "数值指纹/来源事实", "audit": "stage/reviewCode/evidence", "inputSha256": "bfa8f81743357800feb8fc673069aec9e029e78953df4c9a16a9b977fffdf53e" },
+    { "id": "shiploader-modal-adjunct", "before": "所有的技术资料都必须按照所规定时间提交给招标人。", "after": "所有的技术资料都按照所规定时间提交给招标人。", "route": "stanza", "protection": "时间状语不阻断必须→提交", "audit": "stanza/modal.bidder_statement.remove" },
+    { "id": "shiploader-negative-have", "before": "所有电缆不允许有中间接头。", "after": "所有电缆没有中间接头。", "route": "stanza", "protection": "否定含义及有→没有", "audit": "stanza/negative.plain_statement" },
+    { "id": "shiploader-prohibit-location", "before": "雨、雪、雾天气及风力超过4级时，禁止在室外施工。", "after": "雨、雪、雾天气及风力超过4级时，不在室外施工。", "route": "stanza", "protection": "天气条件和室外范围", "audit": "stanza/negative.plain_statement" },
+    { "id": "shiploader-only-can", "before": "只有按动大机确认按钮后，才能选择指定的接收机。", "after": "只有按动大机确认按钮后，才可选择指定的接收机。", "route": "deterministic", "protection": "不改成自动动作", "audit": "deterministic/condition.after_completion.remove_modal" },
+    { "id": "shiploader-cannot-calibration", "before": "如果新装船机轮系布置不能通过校核，投标方无条件修改设计。", "after": "如果新装船机轮系布置不能通过校核，投标人无条件修改设计。", "route": "deterministic", "protection": "不能通过校核的条件前件", "audit": "deterministic/party.bidder.canonicalize" },
+    { "id": "shiploader-alias-negative", "before": "未经招标方同意不得采用特殊制造产品。", "after": "未经招标人同意不得采用特殊制造产品。", "route": "deterministic", "protection": "别名归一不触发否定对象变化", "audit": "protection/negation canonicalization" },
+    { "id": "shiploader-sentence-isolation", "before": "投标方必须按照所规定时间提交资料。设备不得拆除防护罩。", "after": "投标人按照所规定时间提交资料。设备不得拆除防护罩。", "route": "sentence_isolation", "protection": "不安全第二句仅退回自身", "audit": "review/polarity_break" }
+  ],
+  "fullDocumentSlots": [
+    { "id": "customer-document-01", "status": "awaiting_stage_2c", "required": ["parsed source SHA-256", "expected residual metrics", "sample before/after", "whitebox audit evidence"] },
+    { "id": "customer-document-02", "status": "awaiting_stage_2c", "required": ["parsed source SHA-256", "expected residual metrics", "sample before/after", "whitebox audit evidence"] },
+    { "id": "customer-document-03", "status": "awaiting_stage_2c", "required": ["parsed source SHA-256", "expected residual metrics", "sample before/after", "whitebox audit evidence"] },
+    { "id": "customer-document-04", "status": "awaiting_stage_2c", "required": ["parsed source SHA-256", "expected residual metrics", "sample before/after", "whitebox audit evidence"] },
+    { "id": "customer-document-05", "status": "awaiting_stage_2c", "required": ["parsed source SHA-256", "expected residual metrics", "sample before/after", "whitebox audit evidence"] },
+    { "id": "customer-document-06", "status": "awaiting_stage_2c", "required": ["parsed source SHA-256", "expected residual metrics", "sample before/after", "whitebox audit evidence"] },
+    { "id": "customer-document-07", "status": "awaiting_stage_2c", "required": ["parsed source SHA-256", "expected residual metrics", "sample before/after", "whitebox audit evidence"] }
+  ]
+}

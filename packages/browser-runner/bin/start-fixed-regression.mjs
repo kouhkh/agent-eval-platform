@@ -3,6 +3,7 @@ import path from "node:path";
 import { createExternalCheckAdapterRegistry } from "../adapters/external-check-adapter-registry.mjs";
 import { createDangerousV2OnlyOfficeAdapter } from "../adapters/dangerous-v2-onlyoffice.mjs";
 import { createPlanoraFixedRegressionAdapter } from "../adapters/planora-fixed-regression.mjs";
+import { createTechnicalSpecRewriteRegressionAdapter } from "../adapters/technical-spec-rewrite-regression.mjs";
 import { createBrowserService } from "../server.mjs";
 
 const port = Number(process.env.PORT || 4321);
@@ -44,6 +45,13 @@ if (process.env.AGENT_EVAL_DANGEROUS_V2_ROOT) {
     id: "dangerous-v2-onlyoffice-experiment",
     executorIds: ["dangerous-v2-onlyoffice-external-driver-v1"],
     adapter: createDangerousV2OnlyOfficeAdapter(),
+  });
+}
+if (process.env.AGENT_EVAL_TECH_SPEC_REWRITE_ROOT) {
+  externalAdapters.push({
+    id: "technical-spec-rewrite-regression",
+    executorIds: ["technical-spec-rewrite-regression-v1"],
+    adapter: createTechnicalSpecRewriteRegressionAdapter(),
   });
 }
 const externalCheckAdapter = createExternalCheckAdapterRegistry({ adapters: externalAdapters });

@@ -6,11 +6,25 @@ import path from "node:path";
 import { test } from "node:test";
 import { createPlanoraFixedRegressionAdapter } from "../adapters/planora-fixed-regression.mjs";
 import { createDangerousV2OnlyOfficeAdapter } from "../adapters/dangerous-v2-onlyoffice.mjs";
+import { createTechnicalSpecRewriteRegressionAdapter } from "../adapters/technical-spec-rewrite-regression.mjs";
 import { createExternalCheckAdapterRegistry } from "../adapters/external-check-adapter-registry.mjs";
 import { ExternalCheckService } from "../lib/external-check-service.mjs";
 import { TestControlPlane } from "../lib/test-control-plane.mjs";
 
 const FIXED_ROOT = process.env.AGENT_EVAL_REAL_FIXED_ROOT;
+
+test("technical spec adapter loads frozen offline goldens without a product service and rejects arbitrary execution", async () => {
+  const adapter = createTechnicalSpecRewriteRegressionAdapter();
+  const loaded = await adapter.load();
+  const asset = loaded.assets[0];
+  assert.equal(asset.id, "technical-spec-rewrite-offline-goldens-v1");
+  assert.equal(asset.assetState, "blocked");
+  assert.equal(asset.baseline.sourceRevision, "59cf5f628f667fb1a5ac295ac71db9befe57498e");
+  assert.equal(asset.baseline.fullDocumentSlots.length, 7);
+  assert.equal(asset.baseline.sourceFiles.length, 5);
+  await assert.rejects(() => adapter.execute({ id: "unregistered", argument: asset.id }), (error) => error.code === "EXECUTOR_NOT_ALLOWED");
+  await assert.rejects(() => adapter.execute(asset.executor), (error) => error.code === "TECH_SPEC_SOURCE_ROOT_REQUIRED");
+});
 
 test("external check registry routes only registered executors and preserves independent assets", async () => {
   const calls = [];
