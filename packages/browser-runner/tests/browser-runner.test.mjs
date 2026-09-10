@@ -475,9 +475,9 @@ test("check groups persist an exact external-check ordering and reject unsafe la
     const layout = { groups: [{ id: "onlyoffice", name: "OnlyOffice 实验", targetUrl: "http://127.0.0.1:3041", collapsed: true, checkIds: ["gamma", "alpha"] }], ungroupedCheckIds: ["beta"] };
     const saved = await fetch(`${item.baseUrl}/api/check-groups`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(layout) });
     assert.equal(saved.status, 200);
-    assert.deepEqual((await saved.json()).layout, { schemaVersion: 2, ...layout });
+    assert.deepEqual((await saved.json()).layout, { schemaVersion: 2, groups: [{ ...layout.groups[0], lastProbe: null }], ungroupedCheckIds: ["beta"] });
     const persisted = JSON.parse(await readFile(path.join(item.root, "check-groups.json"), "utf8"));
-    assert.deepEqual(persisted, { schemaVersion: 2, ...layout });
+    assert.deepEqual(persisted, { schemaVersion: 2, groups: [{ ...layout.groups[0], lastProbe: null }], ungroupedCheckIds: ["beta"] });
     const duplicate = await fetch(`${item.baseUrl}/api/check-groups`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ groups: [{ id: "duplicated", name: "重复", checkIds: ["alpha"] }], ungroupedCheckIds: ["alpha", "beta", "gamma"] }) });
     assert.equal(duplicate.status, 422);
     assert.equal((await duplicate.json()).errorCode, "CHECK_GROUP_DUPLICATE_CHECK");
@@ -499,6 +499,10 @@ test("group target configuration persists, rejects credential URLs, and never pr
     assert.equal(probe.probe.status, "online");
     assert.equal(probe.probe.httpStatus, 200);
     assert.ok(probe.probe.checkedAt);
+    const persistedProbe = { ...probe.probe, errorCode: null };
+    assert.deepEqual(probe.layout.groups[0].lastProbe, persistedProbe);
+    const refreshed = await fetch(`${item.baseUrl}/api/check-groups`).then((response) => response.json());
+    assert.deepEqual(refreshed.layout.groups[0].lastProbe, persistedProbe);
 
     const credential = { groups: [{ id: "bad", name: "不安全", targetUrl: "http://user:secret@127.0.0.1:3041", checkIds: ["alpha"] }], ungroupedCheckIds: [] };
     const rejected = await fetch(`${item.baseUrl}/api/check-groups`, { method: "PUT", headers, body: JSON.stringify(credential) });
@@ -509,7 +513,10 @@ test("group target configuration persists, rejects credential URLs, and never pr
     assert.equal((await fetch(`${item.baseUrl}/api/check-groups`, { method: "PUT", headers, body: JSON.stringify(remote) })).status, 200);
     const forbidden = await fetch(`${item.baseUrl}/api/check-groups/remote/probe`, { method: "POST" });
     assert.equal(forbidden.status, 403);
-    assert.equal((await forbidden.json()).errorCode, "CHECK_GROUP_TARGET_PROBE_FORBIDDEN");
+    const forbiddenBody = await forbidden.json();
+    assert.equal(forbiddenBody.errorCode, "CHECK_GROUP_TARGET_PROBE_FORBIDDEN");
+    assert.deepEqual(forbiddenBody.layout.groups[0].lastProbe.status, "unknown");
+    assert.equal(forbiddenBody.layout.groups[0].lastProbe.errorCode, "CHECK_GROUP_TARGET_PROBE_FORBIDDEN");
 
     // Parser-only check: an exact configured remote target becomes eligible without issuing a real remote request.
     const remoteTarget = parseGroupTarget("http://203.0.113.1:1234");

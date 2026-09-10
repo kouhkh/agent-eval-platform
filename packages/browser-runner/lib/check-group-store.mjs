@@ -6,6 +6,7 @@ const MAX_GROUPS = 100;
 const MAX_NAME_LENGTH = 80;
 const MAX_CHECKS = 10_000;
 const MAX_TARGET_URL_LENGTH = 512;
+const MAX_PROBE_ELAPSED_MS = 60_000;
 
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
 function layoutError(code, message) { return new BrowserRunnerError(code, message, { statusCode: 422, phase: "check-groups" }); }
@@ -30,6 +31,22 @@ function normalizeTargetUrl(value, label) {
   return parsed.href.replace(/\/$/, "");
 }
 
+function normalizeLastProbe(value, label) {
+  if (value == null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw layoutError("CHECK_GROUP_INVALID_PROBE", `${label}的探活记录格式无效。`);
+  const status = text(value.status);
+  if (!["online", "offline", "unknown"].includes(status)) throw layoutError("CHECK_GROUP_INVALID_PROBE", `${label}的探活状态无效。`);
+  const checkedAt = text(value.checkedAt);
+  if (!checkedAt || Number.isNaN(Date.parse(checkedAt))) throw layoutError("CHECK_GROUP_INVALID_PROBE", `${label}缺少有效探活时间。`);
+  const elapsedMs = Number(value.elapsedMs);
+  if (!Number.isInteger(elapsedMs) || elapsedMs < 0 || elapsedMs > MAX_PROBE_ELAPSED_MS) throw layoutError("CHECK_GROUP_INVALID_PROBE", `${label}的探活耗时无效。`);
+  const httpStatus = value.httpStatus == null ? null : Number(value.httpStatus);
+  if (httpStatus !== null && (!Number.isInteger(httpStatus) || httpStatus < 100 || httpStatus > 599)) throw layoutError("CHECK_GROUP_INVALID_PROBE", `${label}的 HTTP 状态无效。`);
+  const errorCode = value.errorCode == null ? null : text(value.errorCode);
+  if (errorCode !== null && (!errorCode || errorCode.length > 100)) throw layoutError("CHECK_GROUP_INVALID_PROBE", `${label}的错误码无效。`);
+  return { status, checkedAt: new Date(checkedAt).toISOString(), elapsedMs, httpStatus, errorCode };
+}
+
 function normalizeLayout(input, checkIds) {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw layoutError("CHECK_GROUP_INVALID_LAYOUT", "分组布局必须是 JSON 对象。");
   const groups = Array.isArray(input.groups) ? input.groups : null;
@@ -52,6 +69,7 @@ function normalizeLayout(input, checkIds) {
       name,
       targetUrl: normalizeTargetUrl(group.targetUrl, `分组“${name}”`),
       collapsed: group.collapsed === true,
+      lastProbe: normalizeLastProbe(group.lastProbe, `分组“${name}”`),
       checkIds: group.checkIds.map((value) => normalizeId(value, `分组“${name}”中的检查项`)),
     };
   });
@@ -79,8 +97,7 @@ export class CheckGroupStore {
     catch (error) { if (error?.code === "ENOENT") return null; throw error; }
   }
 
-  async get(checkIds) {
-    const ids = [...new Set(checkIds.map((value) => normalizeId(value, "检查项")))];
+  async readLayout(ids) {
     const saved = await this.readRaw();
     if (!saved) return defaultLayout(ids);
     try { return normalizeLayout(saved, ids); }
@@ -96,15 +113,43 @@ export class CheckGroupStore {
     }
   }
 
+  async writeLayout(layout) {
+    await mkdir(path.dirname(this.statePath), { recursive: true, mode: 0o700 });
+    const tmp = `${this.statePath}.tmp`;
+    await writeFile(tmp, `${JSON.stringify(layout, null, 2)}\n`, { mode: 0o600 });
+    await rename(tmp, this.statePath);
+  }
+
+  async get(checkIds) {
+    const ids = [...new Set(checkIds.map((value) => normalizeId(value, "检查项")))];
+    await this.persistChain.catch(() => {});
+    return clone(await this.readLayout(ids));
+  }
+
   async replace(input, checkIds) {
     const layout = normalizeLayout(input, checkIds);
     this.persistChain = this.persistChain.catch(() => {}).then(async () => {
-      await mkdir(path.dirname(this.statePath), { recursive: true, mode: 0o700 });
-      const tmp = `${this.statePath}.tmp`;
-      await writeFile(tmp, `${JSON.stringify(layout, null, 2)}\n`, { mode: 0o600 });
-      await rename(tmp, this.statePath);
+      await this.writeLayout(layout);
     });
     await this.persistChain;
     return clone(layout);
+  }
+
+  async recordProbe(groupId, probe, checkIds) {
+    const ids = [...new Set(checkIds.map((value) => normalizeId(value, "检查项")))];
+    const id = normalizeId(groupId, "分组");
+    const lastProbe = normalizeLastProbe(probe, "探活记录");
+    let result;
+    this.persistChain = this.persistChain.catch(() => {}).then(async () => {
+      const layout = await this.readLayout(ids);
+      const group = layout.groups.find((item) => item.id === id);
+      if (!group) throw new BrowserRunnerError("CHECK_GROUP_NOT_FOUND", "没有对应的分组。", { statusCode: 404, phase: "check-groups" });
+      group.lastProbe = lastProbe;
+      const normalized = normalizeLayout(layout, ids);
+      await this.writeLayout(normalized);
+      result = clone(normalized);
+    });
+    await this.persistChain;
+    return result;
   }
 }
