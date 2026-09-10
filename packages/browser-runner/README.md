@@ -140,7 +140,7 @@ AGENT_EVAL_FIXED_ROOT=/absolute/path/to/fixed-assets npm run start:fixed
 
 ### 技术规格书离线改写回归
 
-`adapters/technical-spec-rewrite-regression.mjs` 读取冻结的飞书句级金标与装船机金标，校验源码 revision 和 SHA-256，再执行已检入的离线改写、路由、白盒审计和飞书质量脚本。它不访问 3033、Stanza HTTP、LLM 或远端。以 `AGENT_EVAL_TECH_SPEC_REWRITE_ROOT` 指向已核验的 Planora 本地工作树后，该独立检查才会注册到控制台。`fixtures/technical-spec-rewrite-regression/manifest.json` 的 7 个全文插槽只声明后续所需哈希、统计、样例和白盒证据，不预填任何客户全文预期值。
+`adapters/technical-spec-rewrite-regression.mjs` 读取冻结的飞书句级金标与装船机金标，校验源码 revision 和 SHA-256，再执行已检入的离线改写、路由、白盒审计和飞书质量脚本。它不访问 3033、Stanza HTTP、LLM 或远端。以 `AGENT_EVAL_TECH_SPEC_REWRITE_ROOT` 指向已核验的 Planora 本地工作树后，该独立检查才会注册到控制台。`fixtures/technical-spec-rewrite-regression/manifest.json` 冻结了 7 篇全文的 R11 规则/Stanza 哈希与统计，以及 R12 模型审计快照；模型记录只供人工或夜间复核，不构成稳定离线通过条件。
 
 多个独立回归集通过 `adapters/external-check-adapter-registry.mjs` 组合：每个适配器只声明自己拥有的稳定 `executorIds`，并由其 `load()` 导入资产、历史和任意业务元数据，由其 `execute()` 产出 `executionStatus`、`checkVerdict`、`businessVerdict`、逐项 `checkResults` 和 `evidenceRefs`。外部资产同样使用上文的 `evaluation` 契约；未声明时兼容为 `mainline/active`，而 `blocked` 或 `retired` 会在调用 adapter 之前拒绝启动。注册层拒绝重复 executor、重复资产 id 以及“资产 executor 属于另一适配器”的错误；它不接受 HTTP 传入的 shell 命令。OnlyOffice 等新回归集应新增独立适配器并注册，而不是修改 Planora 固定回归适配器。
 

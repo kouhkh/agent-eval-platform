@@ -1,40 +1,588 @@
 {
   "schemaVersion": 1,
   "id": "technical-spec-rewrite-offline-goldens-v1",
-  "executor": { "id": "technical-spec-rewrite-regression-v1" },
-  "sourceRevision": "78e5a68b1231e34698d8dc9ac3ee3ce67c43a1ea",
-  "fixtureSha256": "a6027084fdaf3105507153acd7f4867e2750ada8754bc401c046262716baf129",
+  "executor": {
+    "id": "technical-spec-rewrite-regression-v1"
+  },
+  "sourceRevision": "0ddf0fd63c95ae15231e86e86748c9a21486f717",
   "sourceFiles": [
-    { "id": "feishu", "label": "飞书句级金标源", "path": "config/technical-spec-rewrite/feishu-quality-cases.json", "sha256": "bfa8f81743357800feb8fc673069aec9e029e78953df4c9a16a9b977fffdf53e" },
-    { "id": "shiploader", "label": "装船机句子金标", "path": "scripts/test-technical-spec-rewrite-shiploader.ts", "sha256": "c84173d7bd6b7714c36a8be590ffc93ad6085fed06e041e61a7a227ac441bacf" },
-    { "id": "rewrite", "label": "离线改写测试", "path": "scripts/test-technical-spec-rewrite.ts", "sha256": "63f333de17069bbda5b6e6a4a60bb1089c1dd2c41e24eb99afd0f423341be71e" },
-    { "id": "routing", "label": "路由测试", "path": "scripts/test-technical-spec-rewrite-routing.ts", "sha256": "7f63b824bad969166980a165ba5c774fe4bf8e8d5233757a225f38c0bf02206d" },
-    { "id": "audit", "label": "审计测试", "path": "scripts/test-technical-spec-rewrite-audit.ts", "sha256": "e7b5b9ede759050160d17277b426955157f0ab8e60fe9d2a9a9f8adc66a2bfb9" }
+    {
+      "id": "feishu",
+      "label": "飞书句级金标源",
+      "path": "config/technical-spec-rewrite/feishu-quality-cases.json",
+      "sha256": "bfa8f81743357800feb8fc673069aec9e029e78953df4c9a16a9b977fffdf53e"
+    },
+    {
+      "id": "shiploader",
+      "label": "装船机句子金标",
+      "path": "scripts/test-technical-spec-rewrite-shiploader.ts",
+      "sha256": "c84173d7bd6b7714c36a8be590ffc93ad6085fed06e041e61a7a227ac441bacf"
+    },
+    {
+      "id": "rewrite",
+      "label": "离线改写测试",
+      "path": "scripts/test-technical-spec-rewrite.ts",
+      "sha256": "187d4cf96e1ad2dbb46ad3aab90e75af1f35bda29f9c0e52166bbdb2ee2ca9a8"
+    },
+    {
+      "id": "routing",
+      "label": "路由测试",
+      "path": "scripts/test-technical-spec-rewrite-routing.ts",
+      "sha256": "04b7ef5045b9f9ffe3e50588e068d208f46039abd7eee49af3b066d12b80802b"
+    },
+    {
+      "id": "audit",
+      "label": "审计测试",
+      "path": "scripts/test-technical-spec-rewrite-audit.ts",
+      "sha256": "e7b5b9ede759050160d17277b426955157f0ab8e60fe9d2a9a9f8adc66a2bfb9"
+    }
   ],
   "cases": [
-    { "id": "feishu-quality-suite", "input": "config/technical-spec-rewrite/feishu-quality-cases.json", "expected": "15条可执行期望和显式blocked项", "route": "deterministic|stanza|hybrid|manual_review", "protection": "数值指纹/来源事实", "audit": "stage/reviewCode/evidence", "inputSha256": "bfa8f81743357800feb8fc673069aec9e029e78953df4c9a16a9b977fffdf53e" },
-    { "id": "shiploader-modal-adjunct", "before": "所有的技术资料都必须按照所规定时间提交给招标人。", "after": "所有的技术资料都按照所规定时间提交给招标人。", "route": "stanza", "protection": "时间状语不阻断必须→提交", "audit": "stanza/modal.bidder_statement.remove" },
-    { "id": "shiploader-negative-have", "before": "所有电缆不允许有中间接头。", "after": "所有电缆没有中间接头。", "route": "stanza", "protection": "否定含义及有→没有", "audit": "stanza/negative.plain_statement" },
-    { "id": "shiploader-prohibit-location", "before": "雨、雪、雾天气及风力超过4级时，禁止在室外施工。", "after": "雨、雪、雾天气及风力超过4级时，不在室外施工。", "route": "stanza", "protection": "天气条件和室外范围", "audit": "stanza/negative.plain_statement" },
-    { "id": "shiploader-only-can", "before": "只有按动大机确认按钮后，才能选择指定的接收机。", "after": "只有按动大机确认按钮后，才可选择指定的接收机。", "route": "deterministic", "protection": "不改成自动动作", "audit": "deterministic/condition.after_completion.remove_modal" },
-    { "id": "shiploader-cannot-calibration", "before": "如果新装船机轮系布置不能通过校核，投标方无条件修改设计。", "after": "如果新装船机轮系布置不能通过校核，投标人无条件修改设计。", "route": "deterministic", "protection": "不能通过校核的条件前件", "audit": "deterministic/party.bidder.canonicalize" },
-    { "id": "shiploader-alias-negative", "before": "未经招标方同意不得采用特殊制造产品。", "after": "未经招标人同意不得采用特殊制造产品。", "route": "deterministic", "protection": "别名归一不触发否定对象变化", "audit": "protection/negation canonicalization" },
-    { "id": "shiploader-sentence-isolation", "before": "投标方必须按照所规定时间提交资料。设备不得拆除防护罩。", "after": "投标人按照所规定时间提交资料。设备不得拆除防护罩。", "route": "sentence_isolation", "protection": "不安全第二句仅退回自身", "audit": "review/polarity_break" }
+    {
+      "id": "feishu-quality-suite",
+      "input": "config/technical-spec-rewrite/feishu-quality-cases.json",
+      "expected": "15条可执行期望和显式blocked项",
+      "route": "deterministic|stanza|hybrid|manual_review",
+      "protection": "数值指纹/来源事实",
+      "audit": "stage/reviewCode/evidence",
+      "inputSha256": "bfa8f81743357800feb8fc673069aec9e029e78953df4c9a16a9b977fffdf53e"
+    },
+    {
+      "id": "shiploader-modal-adjunct",
+      "before": "所有的技术资料都必须按照所规定时间提交给招标人。",
+      "after": "所有的技术资料都按照所规定时间提交给招标人。",
+      "route": "stanza",
+      "protection": "时间状语不阻断必须→提交",
+      "audit": "stanza/modal.bidder_statement.remove"
+    },
+    {
+      "id": "shiploader-negative-have",
+      "before": "所有电缆不允许有中间接头。",
+      "after": "所有电缆没有中间接头。",
+      "route": "stanza",
+      "protection": "否定含义及有→没有",
+      "audit": "stanza/negative.plain_statement"
+    },
+    {
+      "id": "shiploader-prohibit-location",
+      "before": "雨、雪、雾天气及风力超过4级时，禁止在室外施工。",
+      "after": "雨、雪、雾天气及风力超过4级时，不在室外施工。",
+      "route": "stanza",
+      "protection": "天气条件和室外范围",
+      "audit": "stanza/negative.plain_statement"
+    },
+    {
+      "id": "shiploader-only-can",
+      "before": "只有按动大机确认按钮后，才能选择指定的接收机。",
+      "after": "只有按动大机确认按钮后，才可选择指定的接收机。",
+      "route": "deterministic",
+      "protection": "不改成自动动作",
+      "audit": "deterministic/condition.after_completion.remove_modal"
+    },
+    {
+      "id": "shiploader-cannot-calibration",
+      "before": "如果新装船机轮系布置不能通过校核，投标方无条件修改设计。",
+      "after": "如果新装船机轮系布置不能通过校核，投标人无条件修改设计。",
+      "route": "deterministic",
+      "protection": "不能通过校核的条件前件",
+      "audit": "deterministic/party.bidder.canonicalize"
+    },
+    {
+      "id": "shiploader-alias-negative",
+      "before": "未经招标方同意不得采用特殊制造产品。",
+      "after": "未经招标人同意不得采用特殊制造产品。",
+      "route": "deterministic",
+      "protection": "别名归一不触发否定对象变化",
+      "audit": "protection/negation canonicalization"
+    },
+    {
+      "id": "shiploader-sentence-isolation",
+      "before": "投标方必须按照所规定时间提交资料。设备不得拆除防护罩。",
+      "after": "投标人按照所规定时间提交资料。设备不得拆除防护罩。",
+      "route": "sentence_isolation",
+      "protection": "不安全第二句仅退回自身",
+      "audit": "review/polarity_break"
+    }
   ],
   "fullDocumentEvidence": {
     "kind": "offline_rules_stanza_observation",
-    "modelStage": { "status": "manual_or_nightly_only", "modelCalls": 0, "assertion": "not_a_stable_offline_pass" },
-    "grammar": { "exactReuse": 3108, "freshActual": 0 },
-    "protectionAudit": { "known100": { "resolved": 57, "preserved": 43, "remainingP0": 0, "remainingP1": 0 }, "r2New20": { "resolved": 0, "preserved": 20, "remainingP0": 0, "remainingP1": 0 }, "changedAuditExamples": 28, "problemStatusSha256": "43feeab839e5099f06e00a4ed1381bcb67f6ba5f8a45284ec5e7574b44b73b53", "r2NewProblemStatusSha256": "5c7efa999821c27bfc141b6f7faa81d2076a9bb9581d0c1898c83e20690c9e89", "examplesSha256": "10a00fedcbaf2b232295b1820f321001b5c3dcbc00d052dc3786e35b719f4dd3" },
-    "source": ".worktrees/tech-spec-customer-full-20260910/.runtime/r3-78e5a68b"
+    "modelStage": {
+      "status": "manual_or_nightly_only",
+      "assertion": "not_a_stable_offline_pass",
+      "r12": {
+        "actualHttpCalls": 123,
+        "newCallsR12": 28,
+        "allHttp200": true,
+        "adopted": 628,
+        "preserved": 771,
+        "rejected": 466,
+        "deferred": 30,
+        "P0": 0,
+        "P1": 0,
+        "P2": 0,
+        "auditSummarySha256": "0e0baa8a365ac9e4caba342338e531e8957aeb41351476d8f0490c555305326d",
+        "limitation": "Docling原始读取顺序问题未由模型阶段修复，不能声称全文无解析问题。"
+      }
+    },
+    "grammar": {
+      "exactReuse": 2995,
+      "freshActual": 0
+    },
+    "protectionAudit": {
+      "known100": {
+        "resolved": 57,
+        "preserved": 43,
+        "remainingP0": 0,
+        "remainingP1": 0
+      },
+      "r2New20": {
+        "resolved": 0,
+        "preserved": 20,
+        "remainingP0": 0,
+        "remainingP1": 0
+      },
+      "changedAuditExamples": 28,
+      "problemStatusSha256": "c25c35872fbf1cd9c92de373e0f97e4ffa107842e8b9e0d02114fcf50dc16e57",
+      "r2NewProblemStatusSha256": "26f3f5720211b441eb351bf7adf77f153bc0a73c490f353300ebc25e3aef6c72",
+      "examplesSha256": "532b6c5de62a9d84e74927d0ff6c59094d5d375122fa4ddab6756141e6f321a2"
+    },
+    "source": ".worktrees/tech-spec-customer-full-20260910/.runtime/r11-0ddf0fd6"
   },
   "fullDocumentSlots": [
-    { "id": "01", "sourceSha256": "eedc642bcd1e710de2a6f09ad6eea490ba81245ca70d742b367d0e927a270d36", "resultSha256": "541be90d8491c042acdbe8486c3ac0ed8f97afcfcc1a9ab3f90ba94a23db5aa5", "candidateUnits": 907, "rewrittenUnits": 811, "preservedUnits": 3691, "modelResidualUnits": 185, "remainingKeywords": { "招标方": 0, "投标方": 0, "必须": 10, "不允许": 1, "不得": 6, "应该": 3, "禁止": 2, "不能": 9, "才能": 2 } },
-    { "id": "02", "sourceSha256": "ea1b5f0048d240cf043c45ff03c412d38d8683889d376d053257a8d83e967aff", "resultSha256": "5b097606481991d92877586906d34cd6767e5ed91f4224d3af1385bad59f483c", "candidateUnits": 1010, "rewrittenUnits": 875, "preservedUnits": 4053, "modelResidualUnits": 207, "remainingKeywords": { "招标方": 0, "投标方": 0, "必须": 11, "不允许": 7, "不得": 4, "应该": 3, "禁止": 4, "不能": 10, "才能": 3 } },
-    { "id": "03", "sourceSha256": "67a338591bdbc55d1f0220c64a869d1838dbd546381672492218f82d0ba6bb09", "resultSha256": "37dd304b6e2a26608a5b3fdb6b6421ce108e6ac41fe4e5b7d01b6c73cd526137", "candidateUnits": 344, "rewrittenUnits": 301, "preservedUnits": 2261, "modelResidualUnits": 68, "remainingKeywords": { "招标方": 0, "投标方": 0, "必须": 6, "不允许": 0, "不得": 1, "应该": 1, "禁止": 1, "不能": 3, "才能": 2 } },
-    { "id": "04", "sourceSha256": "8993275983ac5312e521333063b4bc5410359e102ed59adad4ddc37100d971c2", "resultSha256": "8328022bf734a48a8bb782f34916b0098af0e9478341cf8c8729e73021c289dd", "candidateUnits": 77, "rewrittenUnits": 66, "preservedUnits": 370, "modelResidualUnits": 11, "remainingKeywords": { "招标方": 0, "投标方": 0, "必须": 2, "不允许": 0, "不得": 1, "应该": 0, "禁止": 0, "不能": 0, "才能": 0 } },
-    { "id": "05", "sourceSha256": "55a4313bc0a62c928c79830cd036187297763be141cc49c10c9f2c81eb25d126", "resultSha256": "68efabc27af8f60741acf12564cd49550dce893c27ba619ac91db4c20fbbc9c4", "candidateUnits": 1010, "rewrittenUnits": 876, "preservedUnits": 3987, "modelResidualUnits": 209, "remainingKeywords": { "招标方": 0, "投标方": 0, "必须": 11, "不允许": 7, "不得": 4, "应该": 3, "禁止": 4, "不能": 10, "才能": 3 } },
-    { "id": "06", "sourceSha256": "5c9663785e0dca61cff20b9fe71f44ea14af9ecdf13a92163a51a5d6bd500ca9", "resultSha256": "654cff16f1bbfa892dc3597b6255f6bfc994c1f1d2110865ce08307d8a0083af", "candidateUnits": 261, "rewrittenUnits": 202, "preservedUnits": 1414, "modelResidualUnits": 72, "remainingKeywords": { "招标方": 0, "投标方": 0, "必须": 1, "不允许": 4, "不得": 3, "应该": 0, "禁止": 1, "不能": 3, "才能": 2 } },
-    { "id": "07", "sourceSha256": "d618a2f208a20ff8829c76e174c688a738a8470f8e2e84e470d4762faee92b99", "resultSha256": "0514d0e182aacbd2259864874dc3102898963c644d470c4f9be91b30e0ce6ab8", "candidateUnits": 932, "rewrittenUnits": 838, "preservedUnits": 3539, "modelResidualUnits": 208, "remainingKeywords": { "招标方": 0, "投标方": 0, "必须": 11, "不允许": 1, "不得": 10, "应该": 3, "禁止": 3, "不能": 11, "才能": 3 } }
-  ]
+    {
+      "id": "01",
+      "pdfSha256": "c8db9f8916e28091f74a8d40b5d05b3d66c10dd3c622dd780d72eae498e2c0d1",
+      "sourceSha256": "eedc642bcd1e710de2a6f09ad6eea490ba81245ca70d742b367d0e927a270d36",
+      "parsedArtifactSha256": "12030939ece285bb2e34c29952d67e39a940a5b06b68ed09c5fb6e053ebd4c70",
+      "ruleResultSha256": "f420857eeee2fac1bcd211c1d45c4aaa1ec89ff06d4e10c297e585891830869f",
+      "modelResultSha256": "594a4419bd50ce5356945d3d0e060894f1dbd26d8d326737687635a2a49d3dc9",
+      "actualHttpCallsAcrossHistory": 25,
+      "r12NewCalls": 0,
+      "modelMode": "exact_prior_input_revalidated_on_current_rules",
+      "ruleCandidates": 887,
+      "ruleChangedUnits": 797,
+      "rulePreservedRoutes": 3706,
+      "modelCandidateUnits": 179,
+      "modelFinalCounts": {
+        "changed": 124,
+        "preserved": 154,
+        "rejected": 90,
+        "deferred_no_new_model": 8
+      },
+      "keywordCounts": {
+        "original": {
+          "招标方": 190,
+          "投标方": 225,
+          "必须": 101,
+          "不允许": 11,
+          "不得": 49,
+          "应该": 25,
+          "禁止": 6,
+          "不能": 33,
+          "才能": 4
+        },
+        "rules": {
+          "招标方": 0,
+          "投标方": 0,
+          "必须": 16,
+          "不允许": 1,
+          "不得": 6,
+          "应该": 3,
+          "禁止": 2,
+          "不能": 9,
+          "才能": 2
+        },
+        "final": {
+          "招标方": 0,
+          "投标方": 0,
+          "必须": 10,
+          "不允许": 1,
+          "不得": 6,
+          "应该": 2,
+          "禁止": 2,
+          "不能": 7,
+          "才能": 1
+        }
+      },
+      "deferredTargets": [
+        "u:p:209",
+        "u:p:228:s:3",
+        "u:p:526",
+        "u:p:600",
+        "u:p:643:s:3",
+        "u:p:935:s:2",
+        "u:p:1797:s:1",
+        "u:p:2049"
+      ]
+    },
+    {
+      "id": "02",
+      "pdfSha256": "c44dae89ebc208d7d2509c8e15ff1f035904fd472aa5a590ec6b18d9b4ed7ae1",
+      "sourceSha256": "ea1b5f0048d240cf043c45ff03c412d38d8683889d376d053257a8d83e967aff",
+      "parsedArtifactSha256": "d10a15e0e94e3adaf481010138f57530aa58b84065ae2bd9f8e2a833be717354",
+      "ruleResultSha256": "6347d2cff67238a3613c9990213484f8eca6957d116174ce32e95c00d1ae4529",
+      "modelResultSha256": "4d2819e5ea5a126b86e27b9207f707331e4ad0d8e10afa95eed5d4ce37c91d0a",
+      "actualHttpCallsAcrossHistory": 26,
+      "r12NewCalls": 0,
+      "modelMode": "exact_prior_input_revalidated_on_current_rules",
+      "ruleCandidates": 983,
+      "ruleChangedUnits": 850,
+      "rulePreservedRoutes": 4079,
+      "modelCandidateUnits": 200,
+      "modelFinalCounts": {
+        "changed": 124,
+        "preserved": 148,
+        "rejected": 118,
+        "deferred_no_new_model": 15
+      },
+      "keywordCounts": {
+        "original": {
+          "招标方": 186,
+          "投标方": 6,
+          "必须": 117,
+          "不允许": 17,
+          "不得": 51,
+          "应该": 27,
+          "禁止": 9,
+          "不能": 31,
+          "才能": 5
+        },
+        "rules": {
+          "招标方": 0,
+          "投标方": 0,
+          "必须": 16,
+          "不允许": 7,
+          "不得": 4,
+          "应该": 3,
+          "禁止": 4,
+          "不能": 10,
+          "才能": 3
+        },
+        "final": {
+          "招标方": 0,
+          "投标方": 0,
+          "必须": 11,
+          "不允许": 6,
+          "不得": 4,
+          "应该": 3,
+          "禁止": 4,
+          "不能": 9,
+          "才能": 1
+        }
+      },
+      "deferredTargets": [
+        "u:p:62",
+        "u:p:63",
+        "u:p:127",
+        "u:table:0:r3:c2",
+        "u:table:1:r3:c2",
+        "u:p:675:s:3",
+        "u:table:41:r1:c0:s:7",
+        "u:table:41:r1:c0:s:8",
+        "u:table:41:r1:c1:s:1",
+        "u:table:41:r1:c1:s:2",
+        "u:table:41:r1:c1:s:3",
+        "u:table:41:r1:c1:s:4",
+        "u:table:41:r1:c1:s:5",
+        "u:table:42:r1:c1",
+        "u:p:2435"
+      ]
+    },
+    {
+      "id": "03",
+      "pdfSha256": "19432e61944601e13152609c333f9269ecadbc22ed85ee3270051c55e2a7c675",
+      "sourceSha256": "67a338591bdbc55d1f0220c64a869d1838dbd546381672492218f82d0ba6bb09",
+      "parsedArtifactSha256": "38ee2e7d0ed8f9848bdd790ec66c495e7272c21eda011399656fce3e580eb6e0",
+      "ruleResultSha256": "a1bdf8627362e2f655a62915dd4a600cf1451f6402d93e3a1417c9664c8b0807",
+      "modelResultSha256": "366009ad9bad17cc08e0c4894a35283dd8c605eb258b6cae71975ea2df1748b4",
+      "actualHttpCallsAcrossHistory": 8,
+      "r12NewCalls": 0,
+      "modelMode": "exact_prior_input_revalidated_on_current_rules",
+      "ruleCandidates": 339,
+      "ruleChangedUnits": 299,
+      "rulePreservedRoutes": 2261,
+      "modelCandidateUnits": 67,
+      "modelFinalCounts": {
+        "changed": 37,
+        "preserved": 68,
+        "rejected": 15,
+        "deferred_no_new_model": 1
+      },
+      "keywordCounts": {
+        "original": {
+          "招标方": 28,
+          "投标方": 11,
+          "必须": 49,
+          "不允许": 5,
+          "不得": 20,
+          "应该": 6,
+          "禁止": 3,
+          "不能": 13,
+          "才能": 3
+        },
+        "rules": {
+          "招标方": 0,
+          "投标方": 0,
+          "必须": 9,
+          "不允许": 0,
+          "不得": 1,
+          "应该": 1,
+          "禁止": 1,
+          "不能": 3,
+          "才能": 2
+        },
+        "final": {
+          "招标方": 0,
+          "投标方": 0,
+          "必须": 5,
+          "不允许": 0,
+          "不得": 1,
+          "应该": 0,
+          "禁止": 1,
+          "不能": 3,
+          "才能": 1
+        }
+      },
+      "deferredTargets": [
+        "u:p:633:s:3"
+      ]
+    },
+    {
+      "id": "04",
+      "pdfSha256": "d1881643d849b2e0706a824e051c3ff596844604d83fe60ddd5123e47ec5c650",
+      "sourceSha256": "8993275983ac5312e521333063b4bc5410359e102ed59adad4ddc37100d971c2",
+      "parsedArtifactSha256": "8c8fa2d52271ed949e7d4462e65e823d645f6fa6232394eaeeb4d0d40c61044a",
+      "ruleResultSha256": "2135864a2ba24bf5d071a4aa7ed50e5fe97114c11eb5272f033a74e053d4948b",
+      "modelResultSha256": "6f47e67a5bc6bbd9f3ff1b6a8d8ee5ff69146ac505caa28f213f2fd50e17da5a",
+      "actualHttpCallsAcrossHistory": 2,
+      "r12NewCalls": 0,
+      "modelMode": "exact_prior_input_revalidated_on_current_rules",
+      "ruleCandidates": 76,
+      "ruleChangedUnits": 65,
+      "rulePreservedRoutes": 371,
+      "modelCandidateUnits": 10,
+      "modelFinalCounts": {
+        "changed": 11,
+        "preserved": 8,
+        "rejected": 5,
+        "deferred_no_new_model": 0
+      },
+      "keywordCounts": {
+        "original": {
+          "招标方": 1,
+          "投标方": 2,
+          "必须": 8,
+          "不允许": 0,
+          "不得": 2,
+          "应该": 0,
+          "禁止": 0,
+          "不能": 0,
+          "才能": 0
+        },
+        "rules": {
+          "招标方": 0,
+          "投标方": 0,
+          "必须": 3,
+          "不允许": 0,
+          "不得": 1,
+          "应该": 0,
+          "禁止": 0,
+          "不能": 0,
+          "才能": 0
+        },
+        "final": {
+          "招标方": 0,
+          "投标方": 0,
+          "必须": 2,
+          "不允许": 0,
+          "不得": 1,
+          "应该": 0,
+          "禁止": 0,
+          "不能": 0,
+          "才能": 0
+        }
+      },
+      "deferredTargets": []
+    },
+    {
+      "id": "05",
+      "pdfSha256": "3151b454a4e39e8418e6c0f44f1461c3109523f39d4fa2084842f4fd17859b3f",
+      "sourceSha256": "55a4313bc0a62c928c79830cd036187297763be141cc49c10c9f2c81eb25d126",
+      "parsedArtifactSha256": "a1ca11b90820dc96cc0b36414be5503153b9f9b7733e167250b36b6947e78b49",
+      "ruleResultSha256": "0592f9a6961d557e9213e5d287eb6afadda730a967f6fc5a376898c177f74e5d",
+      "modelResultSha256": "aa52e18b318fc18080a969a35780c54a47d8147d7d59b847c37dda0615a303fa",
+      "actualHttpCallsAcrossHistory": 26,
+      "r12NewCalls": 0,
+      "modelMode": "exact_prior_input_revalidated_on_current_rules",
+      "ruleCandidates": 983,
+      "ruleChangedUnits": 851,
+      "rulePreservedRoutes": 4014,
+      "modelCandidateUnits": 201,
+      "modelFinalCounts": {
+        "changed": 127,
+        "preserved": 159,
+        "rejected": 106,
+        "deferred_no_new_model": 6
+      },
+      "keywordCounts": {
+        "original": {
+          "招标方": 186,
+          "投标方": 5,
+          "必须": 120,
+          "不允许": 15,
+          "不得": 51,
+          "应该": 27,
+          "禁止": 9,
+          "不能": 30,
+          "才能": 5
+        },
+        "rules": {
+          "招标方": 0,
+          "投标方": 0,
+          "必须": 16,
+          "不允许": 7,
+          "不得": 4,
+          "应该": 3,
+          "禁止": 4,
+          "不能": 10,
+          "才能": 3
+        },
+        "final": {
+          "招标方": 0,
+          "投标方": 0,
+          "必须": 9,
+          "不允许": 5,
+          "不得": 3,
+          "应该": 3,
+          "禁止": 4,
+          "不能": 9,
+          "才能": 1
+        }
+      },
+      "deferredTargets": [
+        "u:p:64",
+        "u:p:65",
+        "u:p:667:s:3",
+        "u:p:1638:s:1",
+        "u:p:1638:s:2",
+        "u:p:2406"
+      ]
+    },
+    {
+      "id": "06",
+      "pdfSha256": "4c70bea9d80c1ab96fcca3e16008a1ce86f139843dcfe9e17a8d53383ffb2e0c",
+      "sourceSha256": "5c9663785e0dca61cff20b9fe71f44ea14af9ecdf13a92163a51a5d6bd500ca9",
+      "parsedArtifactSha256": "687bb390ac443cdd89d93a707b7a1718ae51f751e19fd179e48a19e8c153dcee",
+      "ruleResultSha256": "d0fb05eebe647aaa299ce1bb07a51ae5de5463296fb393b3c6f5407905139083",
+      "modelResultSha256": "1b23f39a03ee4f597f71f82c0d5f063faca87b82d5bc99a43d183deeb7edce33",
+      "actualHttpCallsAcrossHistory": 8,
+      "r12NewCalls": 0,
+      "modelMode": "exact_prior_input_revalidated_on_current_rules",
+      "ruleCandidates": 248,
+      "ruleChangedUnits": 192,
+      "rulePreservedRoutes": 1429,
+      "modelCandidateUnits": 66,
+      "modelFinalCounts": {
+        "changed": 52,
+        "preserved": 40,
+        "rejected": 32,
+        "deferred_no_new_model": 0
+      },
+      "keywordCounts": {
+        "original": {
+          "招标方": 31,
+          "投标方": 32,
+          "必须": 21,
+          "不允许": 7,
+          "不得": 7,
+          "应该": 3,
+          "禁止": 2,
+          "不能": 8,
+          "才能": 2
+        },
+        "rules": {
+          "招标方": 0,
+          "投标方": 0,
+          "必须": 1,
+          "不允许": 4,
+          "不得": 3,
+          "应该": 0,
+          "禁止": 1,
+          "不能": 3,
+          "才能": 2
+        },
+        "final": {
+          "招标方": 0,
+          "投标方": 0,
+          "必须": 0,
+          "不允许": 3,
+          "不得": 3,
+          "应该": 0,
+          "禁止": 1,
+          "不能": 3,
+          "才能": 1
+        }
+      },
+      "deferredTargets": []
+    },
+    {
+      "id": "07",
+      "pdfSha256": "ef2d991ddfadb485916474bf6ac9dbf2653c23a0129618c5f0cdd3d22168ccff",
+      "sourceSha256": "d618a2f208a20ff8829c76e174c688a738a8470f8e2e84e470d4762faee92b99",
+      "parsedArtifactSha256": "9b82306ba7bdbb4af4dc71f56b525d8af721640a7451a0abbfd9842b762cf485",
+      "ruleResultSha256": "15157f7bc5f900a4238274f133467621b91e74db5c966e7eedbe266a0384472c",
+      "modelResultSha256": "66f00d93405304afbb2e35dfa234ed42cb27879203c7d4e23cddf4f321d93e83",
+      "actualHttpCallsAcrossHistory": 28,
+      "r12NewCalls": 28,
+      "modelMode": "actual_current_request",
+      "ruleCandidates": 916,
+      "ruleChangedUnits": 828,
+      "rulePreservedRoutes": 3551,
+      "modelCandidateUnits": 202,
+      "modelFinalCounts": {
+        "changed": 153,
+        "preserved": 194,
+        "rejected": 100,
+        "skipped": 0,
+        "deferred_no_new_model": 0
+      },
+      "keywordCounts": {
+        "original": {
+          "招标方": 201,
+          "投标方": 224,
+          "必须": 110,
+          "不允许": 9,
+          "不得": 59,
+          "应该": 24,
+          "禁止": 8,
+          "不能": 35,
+          "才能": 6
+        },
+        "rules": {
+          "招标方": 0,
+          "投标方": 0,
+          "必须": 14,
+          "不允许": 1,
+          "不得": 10,
+          "应该": 3,
+          "禁止": 3,
+          "不能": 11,
+          "才能": 3
+        },
+        "final": {
+          "招标方": 0,
+          "投标方": 0,
+          "必须": 8,
+          "不允许": 1,
+          "不得": 10,
+          "应该": 3,
+          "禁止": 3,
+          "不能": 11,
+          "才能": 2
+        }
+      },
+      "deferredTargets": []
+    }
+  ],
+  "fixtureSha256": "d748e1092aae92380ebbdfc6f2edfd0274c0e23c1fc150276894ebf9722df9bf"
 }
