@@ -19,7 +19,7 @@ test("technical spec adapter loads frozen offline goldens without a product serv
   const asset = loaded.assets[0];
   assert.equal(asset.id, "technical-spec-rewrite-offline-goldens-v1");
   assert.equal(asset.assetState, "blocked");
-  assert.equal(asset.baseline.sourceRevision, "59cf5f628f667fb1a5ac295ac71db9befe57498e");
+  assert.equal(asset.baseline.sourceRevision, "78e5a68b1231e34698d8dc9ac3ee3ce67c43a1ea");
   assert.equal(asset.baseline.fullDocumentSlots.length, 7);
   assert.equal(asset.baseline.sourceFiles.length, 5);
   await assert.rejects(() => adapter.execute({ id: "unregistered", argument: asset.id }), (error) => error.code === "EXECUTOR_NOT_ALLOWED");

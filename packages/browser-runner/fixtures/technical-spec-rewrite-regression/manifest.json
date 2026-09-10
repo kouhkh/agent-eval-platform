@@ -2,12 +2,12 @@
   "schemaVersion": 1,
   "id": "technical-spec-rewrite-offline-goldens-v1",
   "executor": { "id": "technical-spec-rewrite-regression-v1" },
-  "sourceRevision": "59cf5f628f667fb1a5ac295ac71db9befe57498e",
-  "fixtureSha256": "7f0c28e0b1cc69f1ae13b345c8b2780102148aa96ca1f960413045ff4e874866",
+  "sourceRevision": "78e5a68b1231e34698d8dc9ac3ee3ce67c43a1ea",
+  "fixtureSha256": "a6027084fdaf3105507153acd7f4867e2750ada8754bc401c046262716baf129",
   "sourceFiles": [
     { "id": "feishu", "label": "飞书句级金标源", "path": "config/technical-spec-rewrite/feishu-quality-cases.json", "sha256": "bfa8f81743357800feb8fc673069aec9e029e78953df4c9a16a9b977fffdf53e" },
     { "id": "shiploader", "label": "装船机句子金标", "path": "scripts/test-technical-spec-rewrite-shiploader.ts", "sha256": "c84173d7bd6b7714c36a8be590ffc93ad6085fed06e041e61a7a227ac441bacf" },
-    { "id": "rewrite", "label": "离线改写测试", "path": "scripts/test-technical-spec-rewrite.ts", "sha256": "cdd4f6f57addb75bb84ab73c61bc85512f409b1112c999ee0f8c1d115a82f045" },
+    { "id": "rewrite", "label": "离线改写测试", "path": "scripts/test-technical-spec-rewrite.ts", "sha256": "63f333de17069bbda5b6e6a4a60bb1089c1dd2c41e24eb99afd0f423341be71e" },
     { "id": "routing", "label": "路由测试", "path": "scripts/test-technical-spec-rewrite-routing.ts", "sha256": "7f63b824bad969166980a165ba5c774fe4bf8e8d5233757a225f38c0bf02206d" },
     { "id": "audit", "label": "审计测试", "path": "scripts/test-technical-spec-rewrite-audit.ts", "sha256": "e7b5b9ede759050160d17277b426955157f0ab8e60fe9d2a9a9f8adc66a2bfb9" }
   ],
@@ -21,13 +21,20 @@
     { "id": "shiploader-alias-negative", "before": "未经招标方同意不得采用特殊制造产品。", "after": "未经招标人同意不得采用特殊制造产品。", "route": "deterministic", "protection": "别名归一不触发否定对象变化", "audit": "protection/negation canonicalization" },
     { "id": "shiploader-sentence-isolation", "before": "投标方必须按照所规定时间提交资料。设备不得拆除防护罩。", "after": "投标人按照所规定时间提交资料。设备不得拆除防护罩。", "route": "sentence_isolation", "protection": "不安全第二句仅退回自身", "audit": "review/polarity_break" }
   ],
+  "fullDocumentEvidence": {
+    "kind": "offline_rules_stanza_observation",
+    "modelStage": { "status": "manual_or_nightly_only", "modelCalls": 0, "assertion": "not_a_stable_offline_pass" },
+    "grammar": { "exactReuse": 3108, "freshActual": 0 },
+    "protectionAudit": { "known100": { "resolved": 57, "preserved": 43, "remainingP0": 0, "remainingP1": 0 }, "r2New20": { "resolved": 0, "preserved": 20, "remainingP0": 0, "remainingP1": 0 }, "changedAuditExamples": 28, "problemStatusSha256": "43feeab839e5099f06e00a4ed1381bcb67f6ba5f8a45284ec5e7574b44b73b53", "r2NewProblemStatusSha256": "5c7efa999821c27bfc141b6f7faa81d2076a9bb9581d0c1898c83e20690c9e89", "examplesSha256": "10a00fedcbaf2b232295b1820f321001b5c3dcbc00d052dc3786e35b719f4dd3" },
+    "source": ".worktrees/tech-spec-customer-full-20260910/.runtime/r3-78e5a68b"
+  },
   "fullDocumentSlots": [
-    { "id": "customer-document-01", "status": "awaiting_stage_2c", "required": ["parsed source SHA-256", "expected residual metrics", "sample before/after", "whitebox audit evidence"] },
-    { "id": "customer-document-02", "status": "awaiting_stage_2c", "required": ["parsed source SHA-256", "expected residual metrics", "sample before/after", "whitebox audit evidence"] },
-    { "id": "customer-document-03", "status": "awaiting_stage_2c", "required": ["parsed source SHA-256", "expected residual metrics", "sample before/after", "whitebox audit evidence"] },
-    { "id": "customer-document-04", "status": "awaiting_stage_2c", "required": ["parsed source SHA-256", "expected residual metrics", "sample before/after", "whitebox audit evidence"] },
-    { "id": "customer-document-05", "status": "awaiting_stage_2c", "required": ["parsed source SHA-256", "expected residual metrics", "sample before/after", "whitebox audit evidence"] },
-    { "id": "customer-document-06", "status": "awaiting_stage_2c", "required": ["parsed source SHA-256", "expected residual metrics", "sample before/after", "whitebox audit evidence"] },
-    { "id": "customer-document-07", "status": "awaiting_stage_2c", "required": ["parsed source SHA-256", "expected residual metrics", "sample before/after", "whitebox audit evidence"] }
+    { "id": "01", "sourceSha256": "eedc642bcd1e710de2a6f09ad6eea490ba81245ca70d742b367d0e927a270d36", "resultSha256": "541be90d8491c042acdbe8486c3ac0ed8f97afcfcc1a9ab3f90ba94a23db5aa5", "candidateUnits": 907, "rewrittenUnits": 811, "preservedUnits": 3691, "modelResidualUnits": 185, "remainingKeywords": { "招标方": 0, "投标方": 0, "必须": 10, "不允许": 1, "不得": 6, "应该": 3, "禁止": 2, "不能": 9, "才能": 2 } },
+    { "id": "02", "sourceSha256": "ea1b5f0048d240cf043c45ff03c412d38d8683889d376d053257a8d83e967aff", "resultSha256": "5b097606481991d92877586906d34cd6767e5ed91f4224d3af1385bad59f483c", "candidateUnits": 1010, "rewrittenUnits": 875, "preservedUnits": 4053, "modelResidualUnits": 207, "remainingKeywords": { "招标方": 0, "投标方": 0, "必须": 11, "不允许": 7, "不得": 4, "应该": 3, "禁止": 4, "不能": 10, "才能": 3 } },
+    { "id": "03", "sourceSha256": "67a338591bdbc55d1f0220c64a869d1838dbd546381672492218f82d0ba6bb09", "resultSha256": "37dd304b6e2a26608a5b3fdb6b6421ce108e6ac41fe4e5b7d01b6c73cd526137", "candidateUnits": 344, "rewrittenUnits": 301, "preservedUnits": 2261, "modelResidualUnits": 68, "remainingKeywords": { "招标方": 0, "投标方": 0, "必须": 6, "不允许": 0, "不得": 1, "应该": 1, "禁止": 1, "不能": 3, "才能": 2 } },
+    { "id": "04", "sourceSha256": "8993275983ac5312e521333063b4bc5410359e102ed59adad4ddc37100d971c2", "resultSha256": "8328022bf734a48a8bb782f34916b0098af0e9478341cf8c8729e73021c289dd", "candidateUnits": 77, "rewrittenUnits": 66, "preservedUnits": 370, "modelResidualUnits": 11, "remainingKeywords": { "招标方": 0, "投标方": 0, "必须": 2, "不允许": 0, "不得": 1, "应该": 0, "禁止": 0, "不能": 0, "才能": 0 } },
+    { "id": "05", "sourceSha256": "55a4313bc0a62c928c79830cd036187297763be141cc49c10c9f2c81eb25d126", "resultSha256": "68efabc27af8f60741acf12564cd49550dce893c27ba619ac91db4c20fbbc9c4", "candidateUnits": 1010, "rewrittenUnits": 876, "preservedUnits": 3987, "modelResidualUnits": 209, "remainingKeywords": { "招标方": 0, "投标方": 0, "必须": 11, "不允许": 7, "不得": 4, "应该": 3, "禁止": 4, "不能": 10, "才能": 3 } },
+    { "id": "06", "sourceSha256": "5c9663785e0dca61cff20b9fe71f44ea14af9ecdf13a92163a51a5d6bd500ca9", "resultSha256": "654cff16f1bbfa892dc3597b6255f6bfc994c1f1d2110865ce08307d8a0083af", "candidateUnits": 261, "rewrittenUnits": 202, "preservedUnits": 1414, "modelResidualUnits": 72, "remainingKeywords": { "招标方": 0, "投标方": 0, "必须": 1, "不允许": 4, "不得": 3, "应该": 0, "禁止": 1, "不能": 3, "才能": 2 } },
+    { "id": "07", "sourceSha256": "d618a2f208a20ff8829c76e174c688a738a8470f8e2e84e470d4762faee92b99", "resultSha256": "0514d0e182aacbd2259864874dc3102898963c644d470c4f9be91b30e0ce6ab8", "candidateUnits": 932, "rewrittenUnits": 838, "preservedUnits": 3539, "modelResidualUnits": 208, "remainingKeywords": { "招标方": 0, "投标方": 0, "必须": 11, "不允许": 1, "不得": 10, "应该": 3, "禁止": 3, "不能": 11, "才能": 3 } }
   ]
 }
