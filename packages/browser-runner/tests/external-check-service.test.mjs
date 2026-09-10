@@ -72,13 +72,19 @@ test("dangerous v2 adapter imports a blocked experiment without replaying or del
     const adapter = createDangerousV2OnlyOfficeAdapter({ root });
     const loaded = await adapter.load();
     const asset = loaded.assets[0];
-    assert.equal(asset.track, "experiment");
-    assert.equal(asset.lifecycle.status, "blocked");
-    assert.equal(asset.lifecycle.retryPolicy, "manual_only_no_automatic_retry");
-    assert.equal(asset.fixturePolicy.failedRunCleanup, "retain fixture; platform never deletes an existing retained fixture");
+    assert.equal(asset.evaluation.track, "experiment");
+    assert.equal(asset.evaluation.lifecycle, "blocked");
+    assert.match(asset.evaluation.blockedReason, /imageRelationshipPresent/);
+    assert.equal(asset.evaluation.target.baseUrl, "http://127.0.0.1:3041");
+    assert.match(asset.evaluation.fixturePolicy, /平台不删除/);
+    assert.match(asset.evaluation.promotion.note, /candidate/);
     assert.equal(asset.executor.id, "dangerous-v2-onlyoffice-external-driver-v1");
     assert.equal(loaded.history[asset.id][0].checkVerdict, "failed");
     assert.equal(Object.fromEntries(loaded.history[asset.id][0].checkResults.map((item) => [item.checkId, item.status])).imageRelationshipPresent, "fail");
+    let executions = 0;
+    const service = new ExternalCheckService({ statePath: path.join(root, "platform-runs.json"), adapter: { load: adapter.load, execute: async () => { executions += 1; } } });
+    await assert.rejects(() => service.start(asset.id), (error) => error.code === "CHECK_LIFECYCLE_BLOCKED" && error.statusCode === 422);
+    assert.equal(executions, 0);
     await assert.rejects(() => adapter.execute({ id: "other", argument: asset.id }), (error) => error.code === "EXECUTOR_NOT_ALLOWED");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -189,6 +195,25 @@ test("whitelisted execution exposes pending, running, and finished states with p
     await Promise.all([...service.executions]);
     await service.persistChain;
     assert.match(await readFile(path.join(root, "runs.json"), "utf8"), /objective runner started/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("legacy external assets remain active mainline and can start", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "external-check-legacy-"));
+  let executions = 0;
+  const adapter = {
+    load: async () => ({ assets: [{ id: "legacy-check", executor: { id: "legacy" } }], history: {} }),
+    execute: async () => { executions += 1; return { checkVerdict: "passed", businessVerdict: "not_evaluated" }; },
+  };
+  try {
+    const service = new ExternalCheckService({ statePath: path.join(root, "runs.json"), adapter });
+    const asset = await service.get("legacy-check");
+    assert.equal(asset.evaluation.track, "mainline");
+    assert.equal(asset.evaluation.lifecycle, "active");
+    await service.start("legacy-check");
+    for (let index = 0; index < 30 && executions === 0; index += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(executions, 1);
+    await Promise.all([...service.executions]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

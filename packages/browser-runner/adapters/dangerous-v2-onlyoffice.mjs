@@ -75,33 +75,24 @@ async function resultFrom(root, resultPath) {
 }
 
 function assetFrom(asset, latest) {
+  const blocked = latest.executionStatus !== "completed";
   return {
     ...asset,
     assetState: asset.assetState || "runnable",
-    track: "experiment",
-    lifecycle: {
-      status: latest.executionStatus === "completed" ? "candidate" : "blocked",
-      blockedReason: latest.executionStatus === "completed" ? null : latest.reason || latest.error || "Latest mechanical run did not complete.",
-      retryPolicy: "manual_only_no_automatic_retry",
-      retainedFixture: latest.project?.disposition === "retained_for_investigation",
+    evaluation: {
+      track: blocked ? "experiment" : "candidate",
+      lifecycle: blocked ? "blocked" : "active",
+      ...(blocked ? { blockedReason: latest.reason || latest.error || "Latest mechanical run did not complete." } : {}),
+      target: {
+        name: "OnlyOffice 危大 v2 本地实验台",
+        instance: latest.environment?.name || "local-dangerous-onlyoffice-v2",
+        ...(latest.environment?.baseUrl ? { baseUrl: latest.environment.baseUrl } : {}),
+      },
+      fixturePolicy: `${asset.fixture?.strategy || "每轮新建合成项目"}；项目代码前缀 ${asset.fixture?.projectCodePrefix || "OO-V2-REG-"}；成功时 driver 核验归属后清理，失败保留现场且平台不删除。`,
+      promotion: {
+        note: "修复当前机械失败后，在新的干净 OO-V2-REG-* 现场完整稳定重跑；再由人工提升为 candidate。主干环境另行配置，不能以本地 3041 结果替代。",
+      },
     },
-    target: {
-      kind: "local_experiment",
-      environmentName: latest.environment?.name || "local-dangerous-onlyoffice-v2",
-      baseUrl: latest.environment?.baseUrl || null,
-      sourceRevision: asset.sourceRevision || null,
-    },
-    fixturePolicy: {
-      strategy: asset.fixture?.strategy || "fresh synthetic project per run",
-      projectCodePrefix: asset.fixture?.projectCodePrefix || "OO-V2-REG-",
-      successfulRunCleanup: "driver verifies owned code before deletion",
-      failedRunCleanup: "retain fixture; platform never deletes an existing retained fixture",
-    },
-    promotionCriteria: [
-      "修复当前机械失败并在新的干净 OO-V2-REG-* 现场完成一次完整运行",
-      "连续运行稳定后由人工将 track 从 experiment 提升为 candidate",
-      "主干环境另行配置，不能复用本地 3041 结果替代主干回归",
-    ],
     executor: { id: EXECUTOR_ID, argument: ASSET_ID },
   };
 }

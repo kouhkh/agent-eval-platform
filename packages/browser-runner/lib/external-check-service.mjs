@@ -6,6 +6,20 @@ import { BrowserRunnerError } from "./operation-budget.mjs";
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
 function now() { return new Date().toISOString(); }
 
+function externalEvaluation(asset = {}) {
+  const input = asset.evaluation && typeof asset.evaluation === "object" ? asset.evaluation : {};
+  const track = ["mainline", "experiment", "candidate"].includes(input.track) ? input.track : "mainline";
+  const lifecycle = ["draft", "active", "blocked", "retired"].includes(input.lifecycle) ? input.lifecycle : "active";
+  return {
+    track,
+    lifecycle,
+    ...(input.blockedReason ? { blockedReason: String(input.blockedReason).slice(0, 2000) } : {}),
+    target: input.target && typeof input.target === "object" ? clone(input.target) : {},
+    ...(input.fixturePolicy ? { fixturePolicy: String(input.fixturePolicy).slice(0, 1000) } : {}),
+    promotion: input.promotion && typeof input.promotion === "object" ? clone(input.promotion) : {},
+  };
+}
+
 export class ExternalCheckService {
   constructor(options = {}) {
     this.statePath = path.resolve(options.statePath || path.join(process.cwd(), "data", "external-check-runs.json"));
@@ -20,7 +34,7 @@ export class ExternalCheckService {
   async load() {
     if (!this.adapter) return;
     const initial = await this.adapter.load();
-    for (const asset of initial.assets || []) this.assets.set(asset.id, clone(asset));
+    for (const asset of initial.assets || []) this.assets.set(asset.id, { ...clone(asset), evaluation: externalEvaluation(asset) });
     for (const [id, runs] of Object.entries(initial.history || {})) this.runs.set(id, runs.map(clone));
     try {
       const saved = JSON.parse(await readFile(this.statePath, "utf8"));
@@ -75,6 +89,12 @@ export class ExternalCheckService {
 
   async start(id) {
     const asset = await this.get(id);
+    if (["blocked", "retired"].includes(asset.evaluation?.lifecycle)) {
+      const description = asset.evaluation.lifecycle === "blocked"
+        ? `该回归资产已阻塞：${asset.evaluation.blockedReason || "未记录原因"}`
+        : "该回归资产已淘汰，不允许执行。";
+      throw new BrowserRunnerError("CHECK_LIFECYCLE_BLOCKED", description, { statusCode: 422, phase: "check-control" });
+    }
     const currentRuns = this.runs.get(asset.id) || [];
     if (currentRuns.some((run) => ["pending", "running"].includes(run.executionStatus))) {
       throw new BrowserRunnerError("CHECK_ALREADY_RUNNING", "该检查已在执行。", { statusCode: 409, phase: "check-control" });
