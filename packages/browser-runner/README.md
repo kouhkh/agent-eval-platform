@@ -103,6 +103,23 @@ CLI 通过 `AGENT_EVAL_URL` 指定服务地址；JSON 参数也可用 `@/absolut
 
 `/api/test-cases` 提供第一版 CRUD。资产包含 `assetState`、`draftIssues`、`setup`、`steps`、`cleanup`、人工确认后的 `assertions`、`environment`、`sourceRevision` 和 `policy.gate/nightly`。`assetState: "draft"` 或仍有 `draftIssues` 的资产会在创建浏览器 session 前以 `TEST_CASE_NOT_EXECUTABLE` 阻断；只有 `runnable` 且待补全项清零的版本可以执行。轨迹不直接等于测试，浏览器运行器也不负责 Agent 自主规划。
 
+资产另有独立的 `evaluation` 元数据，供控制台区分持续主干回归和本地探索，不替代页面写操作的 `approvedScope`：
+
+```json
+{
+  "evaluation": {
+    "track": "experiment",
+    "lifecycle": "blocked",
+    "blockedReason": "导出 DOCX 缺失图片关系，保留失败现场等待修复。",
+    "target": { "name": "OnlyOffice 本地实验台", "instance": "local-3041", "baseUrl": "http://127.0.0.1:3041" },
+    "fixturePolicy": "每轮新建合成项目；失败保留，成功后清理",
+    "promotion": { "targetAssetId": "future-mainline-onlyoffice", "note": "稳定重跑后再晋升候选回归" }
+  }
+}
+```
+
+`track` 只能是 `mainline`、`experiment` 或 `candidate`；旧资产默认 `mainline/active`，因此保留原有 `runnable` 语义。`lifecycle` 为 `draft`、`active`、`blocked` 或 `retired`；`blocked` 与 `retired` 会在创建浏览器 session 前阻断运行，控制台展示原因与最近一次运行。实验资产无需专用 adapter，除非它确实需要通用浏览器步骤之外的受控文件或业务检查。
+
 每次 run 固化 `caseVersion`、不含运行历史的 `caseSnapshot` 及其 SHA-256 摘要。主步骤执行状态由 `executionStatus` 表达；业务判定由 `businessVerdict` 单独表达。没有权威断言的成功重放返回 `status: "completed"`、`executionStatus: "completed"`、`businessVerdict: "not_evaluated"`，不能写成业务通过。含权威断言且断言全部成功时才保留兼容字段 `status: "passed"`。HTTP 对 `completed` 和 `passed` 都返回 200。
 
 `cleanup.steps` 与 setup 使用相同的通用操作结构，在主步骤完成或中断后运行。清理操作、证据、错误以及平台拥有 session 的关闭结果都保存在同一 run 的 `cleanup` 字段；清理失败会让兼容字段 `status` 为 `failed`，不会被吞掉。

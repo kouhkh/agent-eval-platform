@@ -309,6 +309,40 @@ test("draft assets and unresolved issues hard-block execution before a session i
   } finally { await closeService(item); }
 });
 
+test("evaluation metadata defaults legacy assets to active mainline and preserves experimental blockers", async () => {
+  const item = await serviceWithFake();
+  try {
+    const legacy = await item.service.controlPlane.create({ title: "legacy fixed regression", steps: [] });
+    assert.deepEqual(legacy.evaluation, { track: "mainline", lifecycle: "active", target: {}, promotion: {} });
+
+    const experimental = await item.service.controlPlane.create({
+      title: "isolated office experiment",
+      steps: [],
+      environment: { baseUrl: "http://127.0.0.1:3041" },
+      sourceRevision: "e333d1bd",
+      evaluation: {
+        track: "experiment",
+        lifecycle: "blocked",
+        blockedReason: "export package lost an image relationship",
+        target: { name: "OnlyOffice local lab", instance: "local-3041" },
+        fixturePolicy: "create a clean project each run; retain on failure",
+        promotion: { targetAssetId: "onlyoffice-mainline", note: "promote after stable reruns" },
+      },
+    });
+    assert.equal(experimental.evaluation.track, "experiment");
+    assert.equal(experimental.evaluation.target.baseUrl, "http://127.0.0.1:3041/");
+    assert.equal(experimental.evaluation.lifecycle, "blocked");
+    const result = await item.service.controlPlane.run(experimental.id, item.service.manager);
+    assert.equal(result.errorCode, "TEST_CASE_LIFECYCLE_BLOCKED");
+    assert.match(result.error, /export package/);
+    assert.equal(item.runner.calls.length, 0);
+
+    const persisted = JSON.parse(await readFile(path.join(item.root, "test-cases.json"), "utf8"));
+    assert.equal(persisted.cases.find((testCase) => testCase.id === legacy.id).evaluation.track, "mainline");
+    assert.equal(persisted.cases.find((testCase) => testCase.id === experimental.id).evaluation.promotion.targetAssetId, "onlyoffice-mainline");
+  } finally { await closeService(item); }
+});
+
 test("cleanup runs after a completed main sequence and keeps cleanup failure evidence visible", async () => {
   const item = await serviceWithFake();
   try {

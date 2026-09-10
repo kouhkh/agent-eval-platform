@@ -67,6 +67,38 @@ function normalizeHumanConfirmation(input, existing = {}) {
   return { status, questions: Array.isArray(source?.questions) ? source.questions.map(String).slice(0, 200) : [], items };
 }
 
+const TEST_TRACKS = new Set(["mainline", "experiment", "candidate"]);
+const TEST_LIFECYCLES = new Set(["draft", "active", "blocked", "retired"]);
+
+function boundedText(value, limit = 1000) { return String(value ?? "").trim().slice(0, limit); }
+
+function normalizeEvaluationMetadata(input, existing = {}, assetState = "runnable", environment = {}) {
+  const source = input === undefined ? existing : input;
+  const value = source && typeof source === "object" ? source : {};
+  const track = boundedText(value.track || existing.track || "mainline", 40);
+  if (!TEST_TRACKS.has(track)) throw new BrowserRunnerError("INVALID_TEST_TRACK", "track 只能是 mainline、experiment 或 candidate。", { statusCode: 422, phase: "control-plane" });
+  const lifecycle = boundedText(value.lifecycle || existing.lifecycle || (assetState === "draft" ? "draft" : "active"), 40);
+  if (!TEST_LIFECYCLES.has(lifecycle)) throw new BrowserRunnerError("INVALID_TEST_LIFECYCLE", "lifecycle 只能是 draft、active、blocked 或 retired。", { statusCode: 422, phase: "control-plane" });
+  const targetInput = value.target && typeof value.target === "object" ? value.target : (existing.target || {});
+  const promotionInput = value.promotion && typeof value.promotion === "object" ? value.promotion : (existing.promotion || {});
+  return {
+    track,
+    lifecycle,
+    ...(boundedText(value.blockedReason ?? existing.blockedReason, 2000) ? { blockedReason: boundedText(value.blockedReason ?? existing.blockedReason, 2000) } : {}),
+    target: {
+      ...(boundedText(targetInput.name, 240) ? { name: boundedText(targetInput.name, 240) } : {}),
+      ...(boundedText(targetInput.instance, 240) ? { instance: boundedText(targetInput.instance, 240) } : {}),
+      ...(boundedText(targetInput.baseUrl || environment.baseUrl, 2000) ? { baseUrl: boundedText(targetInput.baseUrl || environment.baseUrl, 2000) } : {}),
+    },
+    ...(boundedText(value.fixturePolicy ?? existing.fixturePolicy, 1000) ? { fixturePolicy: boundedText(value.fixturePolicy ?? existing.fixturePolicy, 1000) } : {}),
+    promotion: {
+      ...(boundedText(promotionInput.parentAssetId, 240) ? { parentAssetId: boundedText(promotionInput.parentAssetId, 240) } : {}),
+      ...(boundedText(promotionInput.targetAssetId, 240) ? { targetAssetId: boundedText(promotionInput.targetAssetId, 240) } : {}),
+      ...(boundedText(promotionInput.note, 1000) ? { note: boundedText(promotionInput.note, 1000) } : {}),
+    },
+  };
+}
+
 function caseSnapshot(testCase) {
   const { runs: _runs, ...asset } = testCase;
   return jsonClone(asset);
@@ -123,6 +155,7 @@ function normalizeCase(input = {}, existing = {}) {
   if (!["draft", "runnable"].includes(assetState)) {
     throw new BrowserRunnerError("INVALID_ASSET_STATE", "assetState 只能是 draft 或 runnable。", { statusCode: 422, phase: "control-plane" });
   }
+  const environment = normalizeEnvironment(input.environment, existing.environment);
   return {
     ...existing,
     id: existing.id || String(input.id || randomUUID()),
@@ -140,7 +173,8 @@ function normalizeCase(input = {}, existing = {}) {
     metadata: normalizeProposalMetadata(input.metadata, existing.metadata),
     provenance: normalizeProvenance(input.provenance, existing.provenance),
     humanConfirmation: normalizeHumanConfirmation(input.humanConfirmation ?? (input.metadata?.kind === "trace-proposal" ? { status: "pending", questions: draftIssues.filter((issue) => issue.code === "HUMAN_QUESTION").map((issue) => issue.message) } : undefined), existing.humanConfirmation),
-    environment: normalizeEnvironment(input.environment, existing.environment),
+    environment,
+    evaluation: normalizeEvaluationMetadata(input.evaluation, existing.evaluation, assetState, environment),
     sourceRevision: String(input.sourceRevision ?? existing.sourceRevision ?? "").slice(0, 120),
     policy: {
       gate: Boolean(policy.gate ?? existing.policy?.gate),
@@ -174,6 +208,7 @@ export class TestControlPlane {
           assetState: item.assetState || "runnable",
           draftIssues: normalizedDraftIssues(item.draftIssues),
           cleanup: item.cleanup && Array.isArray(item.cleanup.steps) ? item.cleanup : { steps: [] },
+          evaluation: normalizeEvaluationMetadata(item.evaluation, {}, item.assetState || "runnable", item.environment || {}),
         });
       }
     } catch (error) {
@@ -245,7 +280,7 @@ export class TestControlPlane {
       await this.persist();
       return { testCaseId: id, ...run };
     };
-    if (testCase.assetState !== "runnable" || testCase.draftIssues.length > 0) {
+    if (testCase.assetState !== "runnable" || testCase.draftIssues.length > 0 || ["blocked", "retired"].includes(testCase.evaluation?.lifecycle)) {
       return saveRun({
         id: randomUUID(),
         status: "blocked",
@@ -259,8 +294,12 @@ export class TestControlPlane {
         evidenceRefs,
         ...runMetadata,
         cleanup: { status: "not_started", operations: [], evidenceRefs: [] },
-        errorCode: "TEST_CASE_NOT_EXECUTABLE",
-        error: "测试资产仍是草稿或存在待补全项，不允许执行。",
+        errorCode: ["blocked", "retired"].includes(testCase.evaluation?.lifecycle) ? "TEST_CASE_LIFECYCLE_BLOCKED" : "TEST_CASE_NOT_EXECUTABLE",
+        error: testCase.evaluation?.lifecycle === "blocked"
+          ? `测试资产已标记为阻塞：${testCase.evaluation.blockedReason || "未记录原因"}`
+          : testCase.evaluation?.lifecycle === "retired"
+            ? "测试资产已淘汰，不允许执行。"
+            : "测试资产仍是草稿或存在待补全项，不允许执行。",
       });
     }
     if (hasRuntimeValues && sessionId) {
