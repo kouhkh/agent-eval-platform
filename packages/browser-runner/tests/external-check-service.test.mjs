@@ -8,10 +8,18 @@ import { createPlanoraFixedRegressionAdapter } from "../adapters/planora-fixed-r
 import { createDangerousV2OnlyOfficeAdapter } from "../adapters/dangerous-v2-onlyoffice.mjs";
 import { createTechnicalSpecRewriteRegressionAdapter } from "../adapters/technical-spec-rewrite-regression.mjs";
 import { createExternalCheckAdapterRegistry } from "../adapters/external-check-adapter-registry.mjs";
+import { fixedRegressionAdapters } from "../lib/fixed-regression-adapters.mjs";
 import { ExternalCheckService } from "../lib/external-check-service.mjs";
 import { TestControlPlane } from "../lib/test-control-plane.mjs";
 
 const FIXED_ROOT = process.env.AGENT_EVAL_REAL_FIXED_ROOT;
+
+test("fixed regression composition permits an experiment-only console and keeps fixed checks opt-in", () => {
+  const experimentOnly = fixedRegressionAdapters({ AGENT_EVAL_DANGEROUS_V2_ROOT: "/tmp/dangerous-v2" });
+  assert.deepEqual(experimentOnly.map((item) => item.id), ["dangerous-v2-onlyoffice-experiment"]);
+  const withFixed = fixedRegressionAdapters({ AGENT_EVAL_FIXED_ROOT: "/tmp/fixed", AGENT_EVAL_DANGEROUS_V2_ROOT: "/tmp/dangerous-v2" });
+  assert.deepEqual(withFixed.map((item) => item.id), ["planora-fixed-regression", "dangerous-v2-onlyoffice-experiment"]);
+});
 
 test("technical spec adapter loads frozen offline goldens without a product service and rejects arbitrary execution", async () => {
   const adapter = createTechnicalSpecRewriteRegressionAdapter();

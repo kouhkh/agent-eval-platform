@@ -1,9 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { createExternalCheckAdapterRegistry } from "../adapters/external-check-adapter-registry.mjs";
-import { createDangerousV2OnlyOfficeAdapter } from "../adapters/dangerous-v2-onlyoffice.mjs";
-import { createPlanoraFixedRegressionAdapter } from "../adapters/planora-fixed-regression.mjs";
-import { createTechnicalSpecRewriteRegressionAdapter } from "../adapters/technical-spec-rewrite-regression.mjs";
+import { fixedRegressionAdapters } from "../lib/fixed-regression-adapters.mjs";
 import { createBrowserService } from "../server.mjs";
 
 const port = Number(process.env.PORT || 4321);
@@ -33,27 +31,7 @@ const proposalPreset = process.env.AGENT_EVAL_PROPOSAL_TRACE_PATH && process.env
     context: { source: path.basename(path.dirname(process.env.AGENT_EVAL_PROPOSAL_TRACE_PATH)), packetDigest: packet.packetDigest, sourceRevision: packet.evidence?.find((item) => item?.revision)?.revision || null, mode: "read-only proposal only; do not generate or apply scripts" },
   };
 } : null;
-const externalAdapters = [
-    {
-      id: "planora-fixed-regression",
-      executorIds: ["planora-fixed-regression-v1"],
-      adapter: createPlanoraFixedRegressionAdapter(),
-    },
-];
-if (process.env.AGENT_EVAL_DANGEROUS_V2_ROOT) {
-  externalAdapters.push({
-    id: "dangerous-v2-onlyoffice-experiment",
-    executorIds: ["dangerous-v2-onlyoffice-external-driver-v1"],
-    adapter: createDangerousV2OnlyOfficeAdapter(),
-  });
-}
-if (process.env.AGENT_EVAL_TECH_SPEC_REWRITE_ROOT) {
-  externalAdapters.push({
-    id: "technical-spec-rewrite-regression",
-    executorIds: ["technical-spec-rewrite-regression-v1"],
-    adapter: createTechnicalSpecRewriteRegressionAdapter(),
-  });
-}
+const externalAdapters = fixedRegressionAdapters(process.env);
 const externalCheckAdapter = createExternalCheckAdapterRegistry({ adapters: externalAdapters });
 const service = createBrowserService({ dataRoot, env: runtimeEnv, dshBridgeUrl: process.env.AGENT_EVAL_DSH_URL, pinAskUrl: process.env.AGENT_EVAL_PINASK_URL, hitlWorkspace: process.env.AGENT_EVAL_HITL_WORKSPACE, traceCatalogPath: process.env.AGENT_EVAL_TRACE_CATALOG_PATH, systemTraceManifestPath: process.env.AGENT_EVAL_SYSTEM_TRACE_MANIFEST_PATH, proposalPreset, headless: !/^(0|false|no)$/i.test(String(process.env.AGENT_EVAL_HEADLESS || "true")), externalCheckAdapter });
 service.server.listen(port, host, () => console.log(`agent-eval fixed regression console listening on http://${host}:${port}`));
