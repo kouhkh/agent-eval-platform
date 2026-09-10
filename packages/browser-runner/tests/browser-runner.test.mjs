@@ -461,6 +461,31 @@ test("HTTP returns 200 for execution-only completion and 422 for draft blocking"
   } finally { await closeService(item); }
 });
 
+test("check groups persist an exact external-check ordering and reject unsafe layouts", async () => {
+  const externalChecks = {
+    list: async () => [{ id: "alpha" }, { id: "beta" }, { id: "gamma" }],
+    get: async () => ({ id: "alpha" }),
+    start: async () => ({ id: "run" }),
+  };
+  const item = await serviceWithFake({ externalChecks });
+  try {
+    const initial = await fetch(`${item.baseUrl}/api/check-groups`).then((response) => response.json());
+    assert.deepEqual(initial.layout, { schemaVersion: 1, groups: [], ungroupedCheckIds: ["alpha", "beta", "gamma"] });
+    const layout = { groups: [{ id: "onlyoffice", name: "OnlyOffice 实验", checkIds: ["gamma", "alpha"] }], ungroupedCheckIds: ["beta"] };
+    const saved = await fetch(`${item.baseUrl}/api/check-groups`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(layout) });
+    assert.equal(saved.status, 200);
+    assert.deepEqual((await saved.json()).layout, { schemaVersion: 1, ...layout });
+    const persisted = JSON.parse(await readFile(path.join(item.root, "check-groups.json"), "utf8"));
+    assert.deepEqual(persisted, { schemaVersion: 1, ...layout });
+    const duplicate = await fetch(`${item.baseUrl}/api/check-groups`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ groups: [{ id: "duplicated", name: "重复", checkIds: ["alpha"] }], ungroupedCheckIds: ["alpha", "beta", "gamma"] }) });
+    assert.equal(duplicate.status, 422);
+    assert.equal((await duplicate.json()).errorCode, "CHECK_GROUP_DUPLICATE_CHECK");
+    const unknown = await fetch(`${item.baseUrl}/api/check-groups`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ groups: [], ungroupedCheckIds: ["alpha", "beta", "unknown"] }) });
+    assert.equal(unknown.status, 422);
+    assert.equal((await unknown.json()).errorCode, "CHECK_GROUP_UNKNOWN_CHECK");
+  } finally { await closeService(item); }
+});
+
 test("serves the independent control-plane console without an application frontend", async () => {
   const item = await serviceWithFake();
   try {

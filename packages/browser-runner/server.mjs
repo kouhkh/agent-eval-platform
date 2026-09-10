@@ -9,6 +9,7 @@ import { BrowserRunnerError } from "./lib/operation-budget.mjs";
 import { SessionManager } from "./lib/session-manager.mjs";
 import { TestControlPlane } from "./lib/test-control-plane.mjs";
 import { ExternalCheckService } from "./lib/external-check-service.mjs";
+import { CheckGroupStore } from "./lib/check-group-store.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CONSOLE_ASSETS = new Map([
@@ -99,6 +100,7 @@ export function createBrowserService(options = {}) {
     statePath: path.join(dataRoot, "external-check-runs.json"),
     adapter: options.externalCheckAdapter,
   });
+  const checkGroups = options.checkGroups || new CheckGroupStore({ statePath: path.join(dataRoot, "check-groups.json") });
   const dshBridgeUrl = options.dshBridgeUrl || process.env.AGENT_EVAL_DSH_URL || null;
   const pinAskUrl = options.pinAskUrl || process.env.AGENT_EVAL_PINASK_URL || null;
   const hitlWorkspace = options.hitlWorkspace || process.env.AGENT_EVAL_HITL_WORKSPACE || null;
@@ -411,6 +413,12 @@ export function createBrowserService(options = {}) {
         if (request.method === "GET" && checkId && !action) { sendJson(response, 200, { check: await externalChecks.get(checkId) }); return; }
         if (request.method === "POST" && checkId && action === "runs") { sendJson(response, 202, { run: await externalChecks.start(checkId) }); return; }
       }
+      if (parts[0] === "api" && parts[1] === "check-groups" && parts.length === 2) {
+        const checks = await externalChecks.list();
+        const checkIds = checks.map((check) => check.id);
+        if (request.method === "GET") { sendJson(response, 200, { layout: await checkGroups.get(checkIds) }); return; }
+        if (request.method === "PUT") { sendJson(response, 200, { layout: await checkGroups.replace(await readJson(request), checkIds) }); return; }
+      }
       sendJson(response, 404, { errorCode: "NOT_FOUND", error: { code: "NOT_FOUND", message: "没有对应的 API 路由。", phase: "router", retryable: false, details: null } });
     } catch (error) {
       const normalized = error instanceof BrowserRunnerError ? error : new BrowserRunnerError("SERVICE_ERROR", error instanceof Error ? error.message : String(error), { statusCode: 500, phase: "service" });
@@ -418,7 +426,7 @@ export function createBrowserService(options = {}) {
     }
   });
 
-  return { server, runner, manager, controlPlane, externalChecks, evidenceStore, integrations, dataRoot };
+  return { server, runner, manager, controlPlane, externalChecks, checkGroups, evidenceStore, integrations, dataRoot };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
