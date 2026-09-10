@@ -54,7 +54,7 @@ function normalizeStartRequest(value, label) {
   const mode = text(value.mode);
   if (!START_MODES.has(mode)) throw layoutError("CHECK_GROUP_INVALID_START_MODE", `${label}的启动方式无效。`);
   const status = text(value.status);
-  if (!["pending", "blocked", "completed", "cleared"].includes(status)) throw layoutError("CHECK_GROUP_INVALID_START_STATUS", `${label}的启动协助状态无效。`);
+  if (!["pending", "running", "blocked", "completed", "failed", "cleared"].includes(status)) throw layoutError("CHECK_GROUP_INVALID_START_STATUS", `${label}的启动协助状态无效。`);
   const requestedAt = text(value.requestedAt);
   if (!requestedAt || Number.isNaN(Date.parse(requestedAt))) throw layoutError("CHECK_GROUP_INVALID_START_REQUEST", `${label}缺少有效请求时间。`);
   const reason = value.reason == null ? null : text(value.reason);
@@ -83,6 +83,7 @@ function normalizeLayout(input, checkIds) {
       id,
       name,
       targetUrl: normalizeTargetUrl(group.targetUrl, `分组“${name}”`),
+      ...(group.startPlanId == null ? {} : { startPlanId: normalizeId(group.startPlanId, `分组“${name}”的启动计划`) }),
       collapsed: group.collapsed === true,
       lastProbe: normalizeLastProbe(group.lastProbe, `分组“${name}”`),
       startRequest: normalizeStartRequest(group.startRequest, `分组“${name}”`),
@@ -184,7 +185,25 @@ export class CheckGroupStore {
         dsh_process: "等待配置 DSH bridge；控制台不会自行启动 DSH 进程。",
         managed_script: "未登记可运行的固定脚本 ID；控制台不会接收或执行 shell 命令。",
       };
-      group.startRequest = { mode: normalizedMode, status: normalizedMode === "managed_script" ? "blocked" : "pending", requestedAt: new Date().toISOString(), reason: reasons[normalizedMode] };
+      group.startRequest = { mode: normalizedMode, status: normalizedMode === "managed_script" && !group.startPlanId ? "blocked" : "pending", requestedAt: new Date().toISOString(), reason: normalizedMode === "managed_script" && group.startPlanId ? `已请求固定启动计划“${group.startPlanId}”。` : reasons[normalizedMode] };
+      const normalized = normalizeLayout(layout, ids);
+      await this.writeLayout(normalized);
+      result = clone(normalized);
+    });
+    await this.persistChain;
+    return result;
+  }
+
+  async updateStartRequest(groupId, patch, checkIds) {
+    const ids = [...new Set(checkIds.map((value) => normalizeId(value, "检查项")))];
+    const id = normalizeId(groupId, "分组");
+    let result;
+    this.persistChain = this.persistChain.catch(() => {}).then(async () => {
+      const layout = await this.readLayout(ids);
+      const group = layout.groups.find((item) => item.id === id);
+      if (!group) throw new BrowserRunnerError("CHECK_GROUP_NOT_FOUND", "没有对应的分组。", { statusCode: 404, phase: "check-groups" });
+      if (!group.startRequest) throw new BrowserRunnerError("CHECK_GROUP_START_REQUEST_NOT_FOUND", "没有待更新的启动协助请求。", { statusCode: 409, phase: "check-groups" });
+      group.startRequest = { ...group.startRequest, ...patch };
       const normalized = normalizeLayout(layout, ids);
       await this.writeLayout(normalized);
       result = clone(normalized);

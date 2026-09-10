@@ -33,7 +33,9 @@ const proposalPreset = process.env.AGENT_EVAL_PROPOSAL_TRACE_PATH && process.env
 } : null;
 const externalAdapters = fixedRegressionAdapters(process.env);
 const externalCheckAdapter = createExternalCheckAdapterRegistry({ adapters: externalAdapters });
-const service = createBrowserService({ dataRoot, env: runtimeEnv, dshBridgeUrl: process.env.AGENT_EVAL_DSH_URL, pinAskUrl: process.env.AGENT_EVAL_PINASK_URL, hitlWorkspace: process.env.AGENT_EVAL_HITL_WORKSPACE, traceCatalogPath: process.env.AGENT_EVAL_TRACE_CATALOG_PATH, systemTraceManifestPath: process.env.AGENT_EVAL_SYSTEM_TRACE_MANIFEST_PATH, proposalPreset, headless: !/^(0|false|no)$/i.test(String(process.env.AGENT_EVAL_HEADLESS || "true")), externalCheckAdapter });
+const groupStartPlans = process.env.AGENT_EVAL_GROUP_START_PLANS_PATH ? JSON.parse(await readFile(process.env.AGENT_EVAL_GROUP_START_PLANS_PATH, "utf8")) : [];
+if (!Array.isArray(groupStartPlans)) throw new Error("AGENT_EVAL_GROUP_START_PLANS_PATH 必须指向启动计划数组 JSON 文件。");
+const service = createBrowserService({ dataRoot, env: runtimeEnv, dshBridgeUrl: process.env.AGENT_EVAL_DSH_URL, pinAskUrl: process.env.AGENT_EVAL_PINASK_URL, hitlWorkspace: process.env.AGENT_EVAL_HITL_WORKSPACE, traceCatalogPath: process.env.AGENT_EVAL_TRACE_CATALOG_PATH, systemTraceManifestPath: process.env.AGENT_EVAL_SYSTEM_TRACE_MANIFEST_PATH, proposalPreset, groupStartPlans, headless: !/^(0|false|no)$/i.test(String(process.env.AGENT_EVAL_HEADLESS || "true")), externalCheckAdapter });
 service.server.listen(port, host, () => console.log(`agent-eval fixed regression console listening on http://${host}:${port}`));
 const shutdown = async () => { await service.manager.dispose(); await service.runner.close().catch(() => {}); service.server.close(() => process.exit(0)); };
 process.once("SIGINT", shutdown); process.once("SIGTERM", shutdown);

@@ -10,6 +10,7 @@ import { SessionManager } from "./lib/session-manager.mjs";
 import { TestControlPlane } from "./lib/test-control-plane.mjs";
 import { ExternalCheckService } from "./lib/external-check-service.mjs";
 import { CheckGroupStore } from "./lib/check-group-store.mjs";
+import { ManagedGroupStarter } from "./lib/managed-group-starter.mjs";
 import { probeGroupTarget } from "./lib/group-target-probe.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -102,6 +103,14 @@ export function createBrowserService(options = {}) {
     adapter: options.externalCheckAdapter,
   });
   const checkGroups = options.checkGroups || new CheckGroupStore({ statePath: path.join(dataRoot, "check-groups.json") });
+  const startPlans = Array.isArray(options.groupStartPlans) ? options.groupStartPlans : [];
+  const groupStarter = new ManagedGroupStarter({
+    plans: startPlans,
+    onUpdate: async (groupId, patch) => {
+      const checks = await externalChecks.list();
+      await checkGroups.updateStartRequest(groupId, patch, checks.map((check) => check.id));
+    },
+  });
   const groupProbeAllowlist = options.groupProbeAllowlist ?? process.env.AGENT_EVAL_ALLOWED_GROUP_PROBE_TARGETS ?? "";
   const dshBridgeUrl = options.dshBridgeUrl || process.env.AGENT_EVAL_DSH_URL || null;
   const pinAskUrl = options.pinAskUrl || process.env.AGENT_EVAL_PINASK_URL || null;
@@ -447,7 +456,15 @@ export function createBrowserService(options = {}) {
         const checkIds = checks.map((check) => check.id);
         if (request.method === "POST") {
           const body = await readJson(request);
-          sendJson(response, 201, { layout: await checkGroups.requestStart(parts[2], body.mode, checkIds) });
+          let layout = await checkGroups.requestStart(parts[2], body.mode, checkIds);
+          if (body.mode === "managed_script") {
+            const group = layout.groups.find((item) => item.id === parts[2]);
+            if (group?.startPlanId) {
+              const outcome = await groupStarter.start(group);
+              layout = await checkGroups.updateStartRequest(parts[2], outcome, checkIds);
+            }
+          }
+          sendJson(response, 201, { layout });
           return;
         }
         if (request.method === "DELETE") {
